@@ -1,0 +1,13 @@
+# GATT-Dump – NOCH KEINE ECHTE AUSGABE
+#
+# Status (2026-10-01): explore.py konnte noch nicht gegen die Kopfhörer laufen.
+# Grund: Entwicklung fand in einem Linux-Cloud-Container ohne Bluetooth-Adapter
+# statt (kein /sys/class/bluetooth, kein BlueZ/D-Bus). Reale Fehlermeldung:
+#
+#   Suche Gerät, dessen Name 'Crusher' enthält (10 s) ...
+#   FEHLER: BLE nicht verfügbar: FileNotFoundError: [Errno 2] No such file or directory
+#
+# Nächster Schritt: Auf dem Windows-PC mit eingeschalteten Kopfhörern
+#   python scan.py
+#   python explore.py --address <Adresse aus scan.py>
+# ausführen. explore.py überschreibt diese Datei dann mit der echten Ausgabe.
