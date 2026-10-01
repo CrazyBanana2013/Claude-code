@@ -1,0 +1,7 @@
+# Virtuelle Umgebung und Python-Caches
+.venv/
+__pycache__/
+*.pyc
+# Selbsttest-Ergebnisse (synthetisch, keine echten Messungen)
+data/selftest_*.json
+docs/selftest-vergleich.png
