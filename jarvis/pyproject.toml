@@ -1,6 +1,6 @@
 [project]
 name = "jarvis"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lokaler JARVIS-Assistent: PC, WLED, ESPHome-Sensoren und Skripte per Web-UI und lokalem LLM"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,4 +23,5 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: langsamer Ende-zu-Ende-Test (Installer mit echtem Server); abwählen mit -m \"not slow\""]
 filterwarnings = ["ignore::DeprecationWarning"]

@@ -2,6 +2,12 @@
 config.yaml
 secrets.yaml
 state/
+# Sicherung und Zwischendateien des Einrichtungsassistenten (python -m app.setup_wizard)
+config.yaml.bak
+.config.yaml.*.tmp
+
+# Release-Pakete (python scripts/build_installer.py)
+dist/
 
 # Python
 .venv/

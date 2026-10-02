@@ -2,44 +2,58 @@
 # Startet JARVIS beim Anmelden ohne Konsolenfenster (pythonw.exe). Keine Adminrechte noetig.
 #   Installieren:  powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 #   Entfernen:     powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1 -Remove
+# Install.cmd erledigt das auf Wunsch mit; dieses Skript ist fuer spaetere Aenderungen.
 param([switch]$Remove)
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'installer-lib.ps1')
 
 $root = Split-Path -Parent $PSScriptRoot
-$startup = [Environment]::GetFolderPath("Startup")
-$link = Join-Path $startup "JARVIS.lnk"
 
-if ($Remove) {
-    if (Test-Path $link) { Remove-Item $link; Write-Host "Autostart entfernt: $link" }
-    else { Write-Host "Kein Autostart-Eintrag vorhanden." }
-    exit 0
+function Update-ManifestAutostart {
+    # Haelt den Installationsmarker aktuell, damit die Deinstallation den Eintrag mit entfernt.
+    param([string]$Path)
+    $manifest = $null
+    try { $manifest = Read-JarvisManifest $root } catch { return }
+    if (-not $manifest) { return }
+    $m = ConvertTo-JarvisManifestDict $manifest
+    $m['autostart'] = $null
+    if ($Path) { $m['autostart'] = $Path }
+    Write-JarvisManifest -Target $root -Manifest $m
 }
 
-$pythonw = Join-Path $root ".venv\Scripts\pythonw.exe"
-$python = Join-Path $root ".venv\Scripts\python.exe"
-if (Test-Path $pythonw) {
-    $target = $pythonw
-} elseif (Test-Path $python) {
-    # Fallback: mit Konsole, aber minimiert.
-    $target = $python
-    Write-Host "pythonw.exe nicht gefunden - nutze python.exe (minimiertes Konsolenfenster)." -ForegroundColor Yellow
-} else {
-    Write-Host "Keine virtuelle Umgebung gefunden (.venv). Zuerst im Ordner '$root' ausfuehren: uv sync" -ForegroundColor Yellow
-    exit 1
+try {
+    if (-not (Test-JarvisWindows)) { throw 'Autostart gibt es nur unter Windows.' }
+    if ($Remove) {
+        $link = Get-JarvisAutostartPath
+        $status = Remove-JarvisAutostart -Path $link -Owner $root
+        if ($status -eq 'removed') {
+            Write-Host ('Autostart entfernt: ' + $link)
+        } elseif ($status -eq 'foreign') {
+            Write-Host ('Der Autostart-Eintrag {0} startet eine andere JARVIS-Installation ({1}) und bleibt bestehen.' -f $link, (Get-JarvisShortcutTargetPath $link)) -ForegroundColor Yellow
+        } else {
+            Write-Host 'Kein Autostart-Eintrag vorhanden.'
+        }
+        Update-ManifestAutostart -Path $null
+        exit 0
+    }
+    $python = Get-JarvisVenvPython -Target $root
+    if (-not [System.IO.File]::Exists($python)) {
+        Write-Host ("Keine virtuelle Umgebung gefunden (.venv). Zuerst Install.cmd ausfuehren (oder im Ordner '{0}': uv sync)." -f $root) -ForegroundColor Yellow
+        exit 1
+    }
+    if (-not [System.IO.File]::Exists((Join-Path $root 'config.yaml'))) {
+        Write-Host 'Warnung: config.yaml fehlt noch - JARVIS wird beim Start abbrechen (siehe state\logs\server.log).' -ForegroundColor Yellow
+    }
+    $auto = New-JarvisAutostart -Target $root
+    if ($auto.Fallback) {
+        Write-Host 'pythonw.exe nicht gefunden - nutze python.exe (minimiertes Konsolenfenster).' -ForegroundColor Yellow
+    }
+    Update-ManifestAutostart -Path $auto.Path
+    Write-Host ('Autostart eingerichtet: ' + $auto.Path)
+    Write-Host ('Ziel: {0} -m app  (Arbeitsordner: {1})' -f $auto.Executable, $root)
+    Write-Host ('Logs: ' + (Join-Path (Join-Path $root 'state') 'logs\server.log'))
+} catch {
+    Write-Host ('FEHLER: ' + (Get-JarvisErrorMessage $_)) -ForegroundColor Red
+    exit 2
 }
-if (-not (Test-Path (Join-Path $root "config.yaml"))) {
-    Write-Host "Warnung: config.yaml fehlt noch - JARVIS wird beim Start abbrechen (siehe state\logs\server.log)." -ForegroundColor Yellow
-}
-
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($link)
-$shortcut.TargetPath = $target
-$shortcut.Arguments = "-m app"
-$shortcut.WorkingDirectory = $root
-$shortcut.WindowStyle = 7   # minimiert
-$shortcut.Description = "JARVIS - lokaler Assistent"
-$shortcut.Save()
-
-Write-Host "Autostart eingerichtet: $link"
-Write-Host "Ziel: $target -m app  (Arbeitsordner: $root)"
-Write-Host "Logs: $root\state\logs\server.log"
+exit 0

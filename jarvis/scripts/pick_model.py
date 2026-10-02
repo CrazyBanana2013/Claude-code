@@ -1,7 +1,8 @@
 """Findet das kleinste lokal installierte Ollama-Modell mit Tool-Support.
 
 Nutzt nur lesende Ollama-Endpunkte: GET /api/tags (installierte Modelle mit Größe) und
-POST /api/show (Feld "capabilities", muss "tools" enthalten). Ändert nichts.
+POST /api/show (Feld "capabilities", muss "tools" enthalten). Ändert nichts, zieht keine Modelle.
+Die Abfrage selbst steckt in app/ollama_models.py (auch vom Einrichtungsassistenten genutzt).
 
 Aufruf im Ordner jarvis:  .venv\\Scripts\\python.exe scripts\\pick_model.py [--url http://127.0.0.1:11434]
 """
@@ -9,25 +10,23 @@ Aufruf im Ordner jarvis:  .venv\\Scripts\\python.exe scripts\\pick_model.py [--u
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.ollama_models import OllamaUnavailable, list_models, tool_models  # noqa: E402
+
 
 def find_tool_models(client: httpx.Client, base: str) -> list[tuple[int, str]]:
-    tags = client.get(f"{base}/api/tags").json().get("models", [])
-    found = []
-    for model in tags:
-        name = model.get("name")
-        if not name:
-            continue
-        show = client.post(f"{base}/api/show", json={"model": name})
-        caps = show.json().get("capabilities", []) if show.status_code == 200 else []
-        mark = "tools" if "tools" in caps else "-"
-        size = int(model.get("size", 0))
-        print(f"  {name:40s} {size / 1e9:6.1f} GB  capabilities={caps}  [{mark}]")
-        if "tools" in caps:
-            found.append((size, name))
-    return sorted(found)
+    """Gibt alle Modelle aus und liefert (Größe, Name) der Tool-Modelle, kleinstes zuerst."""
+    models = list_models(client, base.rstrip("/"))
+    for m in models:
+        mark = "tools" if m.supports_tools else "-"
+        print(f"  {m.name:40s} {m.size_gb:6.1f} GB  capabilities={list(m.capabilities)}  [{mark}]")
+    return [(m.size, m.name) for m in tool_models(models)]
 
 
 def main() -> int:
@@ -39,8 +38,8 @@ def main() -> int:
         with httpx.Client(timeout=10, trust_env=False) as client:
             print(f"Installierte Modelle bei {base}:")
             found = find_tool_models(client, base)
-    except httpx.HTTPError as exc:
-        print(f"Ollama nicht erreichbar ({type(exc).__name__}). Läuft Ollama?")
+    except OllamaUnavailable as exc:
+        print(f"{exc}. Läuft Ollama?")
         return 1
     if not found:
         print("\nKein installiertes Modell unterstützt Tools. Ein kleines Tool-Modell ziehen,")

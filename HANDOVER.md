@@ -1,5 +1,5 @@
 # Handover – JARVIS (lokaler KI-Assistent)
-Letztes Update: 2026-10-02 16:05 UTC
+Letztes Update: 2026-10-02 19:00 UTC
 
 ## Ziel
 Kleiner Webserver (FastAPI) auf einem Windows-PC mit JARVIS-Oberfläche (Chat + Schnellaktionen),
@@ -157,8 +157,24 @@ danach zu JARVIS weiter.
   **Die PowerShell-Skripte konnten nicht ausgeführt werden** (kein Windows/PowerShell in der
   Entwicklungsumgebung) → nur per Code-Review geprüft.
 
+- [x] Installer (Version 0.2.0, Stand vor dem unabhängigen Review): `jarvis/Install.cmd` →
+  `scripts/install.ps1` (pro Benutzer nach `%LOCALAPPDATA%\JARVIS`, ohne Admin, uv nur nach
+  Zustimmung sonst venv+pip mit `requirements.txt` inkl. Hashes, Einrichtungsassistent
+  `python -m app.setup_wizard configure|token|info`, Startmenü, Autostart, Serverstart,
+  Zusammenfassung mit Firewall-Befehlen zum Selbst-Ausführen), `Uninstall.cmd` →
+  `scripts/uninstall.ps1` (nur mit Marker `.jarvis-install.json`, löscht nur bekannte Dateien,
+  config/secrets/state nur mit `-Purge`), gemeinsame Funktionen `scripts/installer-lib.ps1`,
+  PID-Datei `state/server.pid` aus `python -m app`, Release-ZIP `scripts/build_installer.py`
+  → `dist/JARVIS-Setup-<version>.zip`. Verifiziert: `JARVIS_PWSH=<pfad zu pwsh> pytest` 324 passed
+  (inkl. pwsh-Tests unter `tests/ps/` und End-to-End `tests/test_installer_e2e.py`: ZIP bauen →
+  installieren → Update → deinstallieren → Purge). Getestet mit PowerShell 7.4.6 unter Linux
+  (Testschalter `-AllowNonWindows`); Windows PowerShell 5.1 nur per PSScriptAnalyzer-Profil.
+
 ## In Arbeit
-- Nichts. Alle Meilensteine M0–M6 sind umgesetzt; offen sind nur Aufgaben am echten PC/Handy.
+- Unabhängiges Review des Installers (4 Prüfbereiche, Gegenprüfung, Fixes) – läuft.
+- Neue HUD-Oberfläche im Film-JARVIS-Stil (Strudel in der Mitte, Arme zu anklickbaren Knoten,
+  bewegte Partikel) für `jarvis/web/index.html`: 3 Entwürfe, Jury, Synthese, Browser-Tests – läuft.
+  Entwürfe liegen nur in der Entwicklungsumgebung (Scratchpad), noch nicht im Repo.
 
 ## Nächste Schritte
 User-Aufgaben (können nur am Ziel-PC/Handy erledigt werden), in dieser Reihenfolge:

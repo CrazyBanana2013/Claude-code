@@ -35,7 +35,9 @@ brauchen das Modell ohnehin nicht.
 | Pfad | Zweck |
 |---|---|
 | `app/main.py` | FastAPI-App: Routen `/`, `/api/health`, `/api/status`, `/api/tools`, `/api/tools/{name}`, `/api/confirm/{id}`, `/api/chat` |
-| `app/__main__.py` | `python -m app` – startet mit Host/Port aus `config.yaml` |
+| `Install.cmd`, `Uninstall.cmd` | Installer und Deinstallation per Doppelklick (rufen `scripts\install.ps1` bzw. `scripts\uninstall.ps1` auf) |
+| `app/__main__.py` | `python -m app` – startet mit Host/Port aus `config.yaml`; solange der Server läuft, steht seine PID in `state/server.pid` |
+| `app/setup_wizard.py` | Einrichtungsassistent (`configure`, `token`, `info`), vom Installer aufgerufen |
 | `app/config.py` | Laden und Prüfen von `config.yaml` |
 | `app/auth.py` | API-Token, Sperre nach Fehlversuchen |
 | `app/netguard.py` | IP-Filter (nur LAN/Tailscale) |
@@ -44,10 +46,89 @@ brauchen das Modell ohnehin nicht.
 | `app/fallback.py` | Regel-Parser ohne LLM |
 | `web/index.html` | JARVIS-Oberfläche (eine Datei, keine externen Ressourcen) |
 | `launcher/wake.html` | Handy-Seite: PC per Wake-on-LAN starten, dann zu JARVIS |
-| `scripts/` | `start.ps1`, `install_autostart.ps1`, `stop.ps1`, `probe.py`, `pick_model.py` |
+| `scripts/` | `install.ps1`, `uninstall.ps1`, `installer-lib.ps1` (gemeinsame Funktionen), `start.ps1`, `install_autostart.ps1`, `stop.ps1`, `probe.py`, `pick_model.py` |
+| `scripts/build_installer.py` | Baut das Release-Paket `dist/JARVIS-Setup-<version>.zip` (siehe [Entwicklung](#entwicklung-und-tests)) |
+| `requirements.txt` | Paketliste mit Hashes für die Installation ohne uv (`pip --require-hashes`), erzeugt aus `uv.lock` |
 | `config.example.yaml` | Vorlage – die echte `config.yaml` und `secrets.yaml` werden nie committet |
 
 ## 1. Installation
+
+### Mit dem Installer (empfohlen)
+
+Der Installer richtet JARVIS **pro Benutzer** ein, ganz ohne Adminrechte.
+
+1. **Holen:** das Paket `JARVIS-Setup-<version>.zip` (gebaut mit `scripts\build_installer.py`, siehe
+   [Entwicklung](#entwicklung-und-tests)) – oder das Repository klonen, dann liegt `Install.cmd` im
+   Ordner `jarvis`.
+2. **ZIP freigeben, dann entpacken:** Rechtsklick auf die ZIP-Datei → *Eigenschaften* → unten bei
+   „Sicherheit“ **Zulassen** anhaken → *OK*. Danach Rechtsklick → *Alle extrahieren …*. Ohne das
+   Freigeben fragt Windows beim Doppelklick „Datei öffnen – Sicherheitswarnung“ (bzw. SmartScreen).
+3. **Doppelklick auf `Install.cmd`** im entpackten Ordner – **nicht** „Als Administrator
+   ausführen“. Läuft das Fenster mit Adminrechten, bricht der Installer ab: JARVIS soll unter deinem
+   normalen Konto laufen (Notbremse für Ausnahmen: `Install.cmd -AllowAdmin`).
+
+**Was der Installer fragt** (Enter nimmt jeweils den Vorschlag):
+
+- **uv** fehlt? Dann fragt er, ob er den offiziellen uv-Installer von astral.sh laden darf
+  (Vorgabe: **Nein**). Ohne Zustimmung nimmt er `python -m venv` + `pip` mit der Hash-geprüften
+  `requirements.txt` – dafür muss Python 3.11 oder neuer installiert sein (python.org „nur für
+  mich“ oder Microsoft Store, beides ohne Adminrechte).
+- **Einrichtungsassistent** (bei der ersten Installation): WLED-Adresse, ESPHome-Gerät und
+  Sensornamen, CS2-Skript (Pfad; der Startbefehl wird vorgeschlagen), Ollama-Modell, Port. Auf
+  Wunsch testet er die Geräte kurz – nur lesend (GET), es wird nichts geschaltet. In Klammern steht
+  der aktuelle Wert, `-` überspringt (bleibt TODO, JARVIS startet trotzdem). Gespeichert wird erst
+  nach einer Zusammenfassung.
+- **Autostart** bei jeder Anmeldung, ohne Fenster (Vorgabe: Ja).
+- **Firewall-Befehle** in die Zwischenablage kopieren (Vorgabe: Nein).
+
+Am Ende stehen da: der **API-Token** (nur bei der ersten Installation, einmalig), die Adressen für
+PC, Heimnetz und Tailscale, die noch offenen TODO-Werte und die Firewall-Befehle für
+[Abschnitt 5](#5-windows-firewall). Danach läuft JARVIS schon.
+
+**Was er am System ändert – und nur das:**
+
+| Wo | Was |
+|---|---|
+| `%LOCALAPPDATA%\JARVIS` | Programm, `.venv`, `config.yaml`, `secrets.yaml`, `state\` und der Installationsmarker `.jarvis-install.json` (anderer Ordner: `Install.cmd -Target D:\Tools\JARVIS`) |
+| Startmenü → *JARVIS* | „JARVIS öffnen“, „JARVIS starten“, „JARVIS beenden“, „JARVIS deinstallieren“ |
+| Autostart-Ordner (`shell:startup`) | `JARVIS.lnk`, nur wenn gewünscht |
+| `%USERPROFILE%\.local\bin` | uv – nur nach deiner Zustimmung; PATH und Profile bleiben unverändert |
+
+**Was er nicht anfasst:** keine Adminrechte, keine Firewall-Regel (die Befehle werden nur
+angezeigt), keine Aufgabenplanung, keine Registry- oder Systemeinstellungen, kein Router/keine
+FRITZ!Box, kein OpenRGB, keine Ollama-Installation (nur lesende Abfrage, nie `ollama pull`). Das
+CS2-Skript wird weder geöffnet noch verändert – der Assistent prüft nur, ob die Datei existiert.
+Kein Konto, keine Cloud, kein Tracking.
+
+Weitere Optionen (an `Install.cmd` anhängen, z. B. `Install.cmd -NoAutostart`):
+
+| Option | Wirkung |
+|---|---|
+| `-Target <Ordner>` | anderer Installationsordner |
+| `-Yes` | keine Rückfragen, Vorgaben nehmen (neue `config.yaml` dann mit TODO-Werten) |
+| `-NoAutostart`, `-NoShortcuts`, `-NoStart` | keinen Autostart / keine Startmenü-Einträge / Server am Ende nicht starten |
+| `-InstallUv` / `-NoUv` | uv ohne Rückfrage laden / uv gar nicht verwenden (venv + pip) |
+
+**Aktualisieren:** das neue Paket entpacken und dessen `Install.cmd` starten – also genauso wie
+beim ersten Mal. `config.yaml`, `secrets.yaml` und `state\` werden dabei **nie** überschrieben
+oder gelöscht; der Server wird vorher beendet und danach neu gestartet, Dateien der alten Version
+werden entfernt. Die Frage „Konfiguration jetzt anpassen?“ startet den Assistenten erneut (Vorgabe:
+Nein = nur prüfen). Das geht auch ohne neues Paket mit `Install.cmd` im Installationsordner.
+
+**Deinstallieren:** Startmenü → *JARVIS* → „JARVIS deinstallieren“ (oder `Uninstall.cmd` im
+Installationsordner). Entfernt Programm, `.venv`, Startmenü-Einträge und Autostart.
+`config.yaml`, `secrets.yaml` (Token) und `state\` bleiben, außer du beantwortest die Frage
+„Auch Einstellungen und Daten löschen?“ mit Ja oder startest `Uninstall.cmd -Purge`. Später
+lässt sich der Rest mit `Uninstall.cmd -Target "%LOCALAPPDATA%\JARVIS" -Purge` aus dem
+entpackten Paket löschen – oder einfach den Ordner von Hand. Gelöscht wird nur, was laut
+`.jarvis-install.json` vom Installer stammt; eigene Dateien im Ordner bleiben liegen. uv, Python
+und Ollama bleiben installiert.
+
+> Alle weiteren Befehle in dieser Anleitung (`scripts\…`, `.venv\…`) funktionieren im
+> Installationsordner `%LOCALAPPDATA%\JARVIS` genauso wie im Repo-Ordner `jarvis` – außer den
+> Tests (`pytest`): Die gibt es nur im Repo, der Installer kopiert sie nicht.
+
+### Manuell (ohne Installer)
 
 Voraussetzungen: Windows, Python 3.11 oder neuer, [uv](https://docs.astral.sh/uv/), Ollama
 (optional). Alles läuft unter dem normalen Benutzerkonto, Adminrechte sind nur für die
@@ -70,17 +151,28 @@ cd <Pfad>\jarvis
 uv sync
 ```
 
-Ohne uv geht es auch mit venv:
+Ohne uv geht es auch mit venv (Paketversionen und Hashes aus `requirements.txt`; `pytest` und
+`anyio` nur für die Tests):
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install fastapi uvicorn httpx pydantic pyyaml psutil pytest anyio
+.venv\Scripts\python.exe -m pip install --require-hashes -r requirements.txt
+.venv\Scripts\python.exe -m pip install pytest anyio
 ```
 
 > PowerShell-Skripte sind für Standardbenutzer oft gesperrt. Ohne Adminrechte startest du
 > sie mit `powershell -ExecutionPolicy Bypass -File scripts\<name>.ps1`.
 
 ## 2. Konfiguration (`config.yaml`)
+
+Mit dem Installer ist `config.yaml` schon angelegt. Den Assistenten kannst du jederzeit erneut
+starten (vorhandene Werte sind die Vorgabe, die alte Datei wird als `config.yaml.bak` gesichert):
+
+```powershell
+.venv\Scripts\python.exe -m app.setup_wizard configure --config config.yaml
+```
+
+Von Hand:
 
 ```powershell
 copy config.example.yaml config.yaml
@@ -157,8 +249,9 @@ Bei „Thinking“-Modellen spart `llm.think: false` Zeit.
 powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
-Beim ersten Start erzeugt JARVIS einen API-Token, speichert ihn in `secrets.yaml` und zeigt
-ihn **einmal** in der Konsole an. Diesen Token gibst du beim ersten Öffnen der Oberfläche
+Mit dem Installer läuft JARVIS schon; Starten/Beenden geht über das Startmenü. Der Token wurde
+dort einmal angezeigt. Ohne Installer erzeugt JARVIS beim ersten Start einen API-Token, speichert
+ihn in `secrets.yaml` und zeigt ihn **einmal** in der Konsole an. Diesen Token gibst du beim ersten Öffnen der Oberfläche
 ein; das Handy merkt ihn sich (localStorage). Vergessen? Er steht in `secrets.yaml`. Neuer
 Token: `secrets.yaml` löschen und JARVIS neu starten.
 
@@ -193,6 +286,8 @@ Windows beim ersten Start „Zugriff zulassen?“, nur „Private Netzwerke“ e
 4. Test vom Handy, **im Mobilfunknetz** (WLAN aus): `http://100.x.y.z:8765` öffnen.
 
 ## 7. Autostart
+
+Der Installer fragt danach. Später ein- oder ausschalten:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
@@ -245,6 +340,10 @@ Datei steht nichts davon.
 
 ## 9. Test-Checkliste
 
+- [ ] `Install.cmd` per Doppelklick läuft ohne Fehler durch; Startmenü-Ordner „JARVIS“ mit vier
+      Einträgen, „JARVIS öffnen“ zeigt die Oberfläche.
+- [ ] `Install.cmd` erneut (Update): `config.yaml` und `secrets.yaml` unverändert, Server läuft wieder.
+- [ ] Startmenü „JARVIS beenden“ / „JARVIS starten“ funktionieren.
 - [ ] `uv sync` ohne Fehler, `.venv\Scripts\python.exe -m pytest` grün.
 - [ ] `scripts\start.ps1` startet, Token erscheint einmal in der Konsole.
 - [ ] `http://localhost:8765/api/health` liefert `{"status":"ok"}`, `http://localhost:8765/api/tools` ohne Token 401.
@@ -259,6 +358,8 @@ Datei steht nichts davon.
 - [ ] Handy im Mobilfunknetz mit Tailscale: JARVIS erreichbar.
 - [ ] **Praxistest:** PC aus, Handy auf mobilen Daten, `wake.html` → „PC starten“ → JARVIS öffnet sich.
 - [ ] Autostart einrichten, abmelden/anmelden, JARVIS läuft ohne Fenster.
+- [ ] Zum Schluss (optional): „JARVIS deinstallieren“ – Startmenü und Autostart weg,
+      `config.yaml`/`secrets.yaml` bleiben; danach `Install.cmd` übernimmt sie wieder.
 
 ## Bedienung
 
@@ -298,10 +399,44 @@ Die Tests mocken alle Geräte und Ollama, starten nie `shutdown` und schicken ni
 Geräte. Der Browser-Test für `wake.html` (`tests/web/wake.test.mjs`) läuft nur, wenn Node und
 Playwright installiert sind, sonst wird er übersprungen.
 
+Die Installer-Tests (`tests/test_installer_ps.py` mit `tests/ps/*.tests.ps1`) brauchen PowerShell 7
+(`pwsh` im PATH oder Umgebungsvariable `JARVIS_PWSH`) und laufen im Testmodus `-AllowNonWindows`
+auch unter Linux/macOS. `tests/test_installer_e2e.py` baut das ZIP, installiert daraus mit echtem
+Server, aktualisiert und deinstalliert wieder (braucht zusätzlich uv, dauert etwas). Langsame Tests
+abwählen: `pytest -m "not slow"`.
+
+**Release-Paket bauen:**
+
+```powershell
+.venv\Scripts\python.exe scripts\build_installer.py            # -> dist\JARVIS-Setup-<version>.zip
+.venv\Scripts\python.exe scripts\build_installer.py --out C:\Temp
+```
+
+Die Version kommt aus `pyproject.toml`. Das ZIP enthält einen Ordner `JARVIS-Setup-<version>\` mit
+`Install.cmd`, `Uninstall.cmd`, `README.md`, `config.example.yaml`, `pyproject.toml`, `uv.lock`,
+`requirements.txt`, `app\`, `web\`, `launcher\` und `scripts\` – nie `tests\`, `.venv`, `state\`,
+`config.yaml` oder `secrets.yaml` (liegt so etwas in einem der Ordner, bricht der Build ab).
+`.ps1`/`.cmd` bekommen CRLF-Zeilenenden; der Build ist reproduzierbar (gleiche Quelle = gleiche
+SHA-256, steht in `<zip>.sha256`). Nach Änderungen an den Abhängigkeiten `requirements.txt` neu
+erzeugen:
+
+```powershell
+uv lock
+uv export --frozen --no-dev --format requirements-txt -o requirements.txt
+```
+
+`.ps1`- und `.cmd`-Dateien müssen reines ASCII sein (Windows PowerShell 5.1 liest UTF-8 ohne BOM
+als ANSI) und unter PowerShell 5.1 laufen – ein Test prüft beides grob.
+
 ## Fehlerbehebung
 
 | Meldung | Lösung |
 |---|---|
+| „Datei öffnen – Sicherheitswarnung“ beim Doppelklick auf `Install.cmd` | ZIP vor dem Entpacken freigeben (Eigenschaften → Zulassen), siehe [Installation](#1-installation) |
+| Installer: „Dieses Fenster läuft mit Administratorrechten“ | `Install.cmd` normal per Doppelklick starten, nicht „Als Administrator ausführen“ |
+| Installer: „Weder uv noch Python 3.11 … gefunden“ | dem uv-Download zustimmen oder Python 3.11+ „nur für mich“ installieren, dann `Install.cmd` erneut |
+| Installer: pip-Fehler beim Einrichten der `.venv` | Internetverbindung zu pypi.org prüfen; oder dem uv-Download zustimmen (uv bringt ein passendes Python mit) |
+| Deinstallation: „keinen Installationsmarker“ | Ordner ist keine Installer-Installation – dann von Hand aufräumen |
 | „Konfigurationsdatei nicht gefunden“ | `copy config.example.yaml config.yaml` |
 | „config.yaml ist ungültig: … unbekannter Schlüssel“ | Tippfehler im Schlüssel, siehe `config.example.yaml` |
 | „… noch nicht eingerichtet“ | TODO-Wert in `config.yaml` ausfüllen |
