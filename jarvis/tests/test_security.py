@@ -96,7 +96,7 @@ async def test_public_ip_gets_403(factory, ip):
 
 
 @pytest.mark.parametrize(
-    "ip", ["127.0.0.1", "10.1.2.3", "172.16.5.5", "172.31.255.254", "192.168.178.20", "100.64.0.1", "100.127.255.254", "::1", "::ffff:192.168.0.9"]
+    "ip", ["127.0.0.1", "10.1.2.3", "172.16.5.5", "172.31.255.254", "192.168.0.20", "100.64.0.1", "100.127.255.254", "::1", "::ffff:192.168.0.9"]
 )
 def test_allowed_ranges(ip):
     assert is_allowed(ip, parse_networks(DEFAULT_NETWORKS))

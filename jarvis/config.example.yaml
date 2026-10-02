@@ -34,8 +34,8 @@ sensors:
   - name: "Temperatur"
     type: esphome_rest
     base_url: "http://TODO-ESPHOME-IP"
-    # Name der Entität genau wie in der ESPHome-YAML (ab ESPHome 2026.x),
-    # bei älterer Firmware die object_id (z. B. bme280_temperature).
+    # Name der Entität genau wie in der ESPHome-YAML (neuere ESPHome-Versionen);
+    # ältere Firmware nutzt die object_id (z. B. bme280_temperature) – wird automatisch probiert.
     entity_id: "TODO_ENTITAET_TEMPERATUR"
     unit: "°C"
   - name: "Luftfeuchte"

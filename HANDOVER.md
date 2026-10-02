@@ -1,5 +1,5 @@
 # Handover – JARVIS (lokaler KI-Assistent)
-Letztes Update: 2026-10-02 15:15 UTC
+Letztes Update: 2026-10-02 16:05 UTC
 
 ## Ziel
 Kleiner Webserver (FastAPI) auf einem Windows-PC mit JARVIS-Oberfläche (Chat + Schnellaktionen),
@@ -10,18 +10,99 @@ Dazu `jarvis/launcher/wake.html` fürs Handy: weckt den PC über die Depicus-WoL
 danach zu JARVIS weiter.
 
 ## Umgebung
+- Code liegt im Repo `Claude-code`, Projektordner `jarvis/`; diese Datei liegt im Repo-Root.
 - Entwicklung bisher: Linux-Cloud-Container (NICHT der Ziel-PC). Python 3.11.15, uv 0.8.17,
   Node 22 mit global installiertem Playwright 1.56.1 (Chromium unter `/opt/pw-browsers`).
-- Kein Ollama, kein Windows, kein Zugriff aufs Heimnetz (192.168.178.x wird vom Proxy geblockt).
+- Kein Ollama, kein Windows, kein Zugriff aufs Heimnetz (private IP-Bereiche werden vom
+  Egress-Proxy geblockt: "Destination IP is in a private/reserved range").
   Deshalb konnten `winver`, `ollama --version`, `ollama list` und die ESPHome-Probe NICHT
   ausgeführt werden → User-Aufgaben unter "Nächste Schritte".
-- Ziel-PC: Windows, Ryzen 9800X3D, RX 9070 XT, Ollama mit ROCm auf Port 11434.
+- Ziel-PC: Windows, Ryzen 9800X3D, RX 9070 XT, Ollama mit ROCm auf Port 11434,
+  Standardbenutzer ohne Adminrechte.
+- Abhängigkeiten (in `jarvis/pyproject.toml`, gelockt in `jarvis/uv.lock`, Index pypi.org):
+  fastapi 0.142.2, uvicorn 0.54.0, httpx 0.28.1, pydantic 2.13.5, pyyaml 6.0.3, psutil 7.2.2;
+  dev: pytest 9.1.1, anyio 4.15.1.
+- Befehle (im Ordner `jarvis`):
+  - Installieren: `uv sync`
+  - Tests: `.venv/bin/python -m pytest` (Windows: `.venv\Scripts\python.exe -m pytest`)
+  - Starten: `python -m app` bzw. `powershell -ExecutionPolicy Bypass -File scripts\start.ps1`
+    (alternativ `uvicorn app.main:app --host 0.0.0.0 --port 8765`)
+  - Umgebungsvariablen (optional, v. a. für Tests): `JARVIS_CONFIG`, `JARVIS_SECRETS`, `JARVIS_STATE`.
 
 ## Projektstruktur
-(wird fortlaufend ergänzt)
+- `jarvis/app/main.py` – `create_app()` (für Tests) + lazy `app` für uvicorn; Routen `/`,
+  `/api/health`, `/api/status`, `/api/tools`, `/api/tools/{name}`, `/api/confirm/{id}`, `/api/chat`.
+- `jarvis/app/__main__.py` – `python -m app`: Host/Port aus config.yaml; unter pythonw.exe
+  Ausgabe nach `state/logs/server.log`.
+- `jarvis/app/config.py` – pydantic-Modelle, deutsche Fehlermeldungen, `is_todo()`, `config_warnings()`.
+- `jarvis/app/auth.py` – Token in secrets.yaml, Bearer-Prüfung mit `hmac.compare_digest`, Lockout.
+- `jarvis/app/netguard.py` – ASGI-Middleware, 403 außerhalb erlaubter Netze.
+- `jarvis/app/tools/registry.py` – `Tool`, `Registry`, `ToolContext`, Fehlerklassen, `run_recorded()`.
+- `jarvis/app/tools/pc.py` – `pc_shutdown` (nur confirm_required), `pc_shutdown_cancel`, `confirm()`.
+- `jarvis/app/tools/led.py` – `led_power`, `led_brightness`, `led_color`, `led_effect`, `led_preset`, `led_status`.
+- `jarvis/app/tools/sensors.py` – `sensors_read`, Adapter-Tabelle `ADAPTERS` (`esphome_rest`).
+- `jarvis/app/tools/scripts.py` – `scripts_list/start/stop/status`, `ScriptManager`.
+- `jarvis/app/llm.py` – `OllamaAgent` (chat mit Tool-Schleife, status).
+- `jarvis/app/fallback.py` – Regel-Parser `parse()` + `handle()`.
+- `jarvis/web/index.html` – Oberfläche (eine Datei).
+- `jarvis/launcher/wake.html` – Handy-Launcher (eine Datei).
+- `jarvis/scripts/start.ps1`, `install_autostart.ps1`, `stop.ps1` – Windows-Betrieb.
+- `jarvis/scripts/probe.py` – nur-GET-Probe gegen WLED/ESPHome.
+- `jarvis/scripts/pick_model.py` – kleinstes Ollama-Modell mit capability "tools" finden.
+- `jarvis/tests/` – pytest (Mocks für Geräte/Ollama), `tests/dummy_script.py`,
+  `tests/web/wake.test.mjs` (Playwright, via `tests/test_wake_launcher.py`).
+- `jarvis/config.example.yaml` – einzige versionierte Config; `config.yaml`, `secrets.yaml`,
+  `state/` sind in `jarvis/.gitignore`.
+- `jarvis/README.md` – Einrichtung für den User.
 
 ## Architektur & Entscheidungen
-(wird fortlaufend ergänzt)
+- **Eine Registry** (`app/tools/registry.py`): Parameter jedes Tools sind ein pydantic-Modell;
+  daraus entstehen JSON-Schema (für Ollama, bereinigt: keine titles, kein anyOf-null) und die
+  Validierung. LLM, Fallback und UI rufen alle `Registry.execute()` auf.
+- **Shutdown nur mit Bestätigung:** `pc_shutdown` erzeugt eine einmalige ID (30 s). Ausgeführt
+  wird nur in `pc.confirm()`, das ausschließlich die Route `POST /api/confirm/{id}` aufruft.
+  Es gibt kein Tool, über das das LLM bestätigen könnte. Auf Nicht-Windows verweigert
+  `run_command()` (Schutz der Entwicklungsmaschine).
+- **Fehlerformat:** Tool-Fehler → `{"ok": false, "error": "..."}` mit 404 (unbekanntes Tool),
+  422 (Parameter), 400 (Gerät/TODO). Erfolg → `{"ok": true, "tool", "result"}`.
+- **Lockout:** fehlender oder falscher Token zählt als Fehlversuch; ab 5 → 429 mit Retry-After
+  für 60 s, auch mit richtigem Token. Erfolg setzt den Zähler zurück.
+- **Netguard prüft nur die TCP-Quelladresse** (keine X-Forwarded-For), weil kein Reverse-Proxy
+  vorgesehen ist. `::1` wird zusätzlich erlaubt, IPv4-mapped IPv6 wird entpackt.
+- **WLED:** POST `/json/state` mit `"v": true`; `"seg"` als Objekt (wirkt auf alle ausgewählten
+  Segmente); Helligkeit 0 % → `{"on": false}` (Doku empfiehlt das statt bri 0); Effekte über
+  `/json/eff` (Namen "RSVD"/"-" sind reserviert), Preset-Namen über `GET /presets.json`
+  (Datei des WLED-Dateisystems; in der JSON-API-Doku nur indirekt erwähnt → am echten Gerät
+  prüfen; Preset per Nummer funktioniert unabhängig davon). Quelle: WLED-Docs-Repo
+  `docs/interfaces/json-api.md` (kno.wled.ge war vom Proxy gesperrt).
+- **ESPHome:** `GET /sensor/<Name>` → Feld `value`. Laut aktueller Doku (esphome-docs-Repo,
+  `src/content/docs/web-api/index.mdx`) ist `<Name>` der Entitätsname aus der YAML; ältere
+  Firmware nutzt die object_id. Daher bei 404 automatischer zweiter Versuch mit object_id-Form.
+  NaN/null → "kein Messwert". Fehler pro Sensor, nie Gesamtabbruch.
+- **Skripte:** `Popen(list, shell=False)`. Windows: `CREATE_NEW_PROCESS_GROUP` +
+  (`CREATE_NO_WINDOW` und Log-Datei, wenn `hide_window`, sonst `CREATE_NEW_CONSOLE`). POSIX:
+  `start_new_session=True`. Stop: Windows `taskkill /PID x /T` ohne /F (WM_CLOSE), POSIX
+  SIGTERM an die Gruppe; nach 5 s `psutil` kill des ganzen Baums. PID + create_time in
+  `state/scripts.json` → Status stimmt nach Neustart, PID-Wiederverwendung wird erkannt.
+  Verworfen: `CTRL_BREAK_EVENT` als sanfter Stop, weil das nur im selben Konsolenfenster geht
+  und der Server per pythonw keine Konsole hat.
+- **LLM:** Ollama `/api/chat`, `stream:false`, `options.temperature`, `keep_alive` aus Config,
+  optional `think`. Tool-Ergebnisse gehen als `{"role":"tool","tool_name":...}` zurück (laut
+  Ollama-Doku `docs/api.md`). `arguments` als Objekt oder JSON-String akzeptiert.
+  Fallback auf Regel-Parser nur, wenn das LLM fehlschlägt, BEVOR ein Tool ausgeführt wurde
+  (sonst würde doppelt ausgeführt) – dann Antwort "Teilweise erledigt, dann Fehler: …".
+  Fehlererkennung: Verbindungsfehler; HTTP 404 oder "not found" → Modell fehlt;
+  "does not support tools" → kein Tool-Support (genauer Fehlertext von Ollama am echten Gerät
+  nicht geprüft, Erkennung per Teilstring).
+- **App lazy laden:** `app.main.__getattr__("app")` lädt Config erst beim Zugriff durch uvicorn,
+  damit Tests `create_app()` ohne config.yaml importieren können. Config-Fehler →
+  `SystemExit(2)` mit Klartext, kein Stacktrace.
+- **wake.html:** `window.open(url, "_blank")` ohne "noopener"-Feature (damit liefert
+  window.open immer null und die Pop-up-Erkennung wäre falsch), danach `opener = null`.
+  Abfrage-Schleife mit Generationszähler gegen parallele Schleifen; `visibilitychange` prüft
+  beim Zurückkehren sofort.
+- **Autostart:** Verknüpfung im Startup-Ordner auf `.venv\Scripts\pythonw.exe -m app`
+  (Fallback python.exe minimiert). Keine Aufgabenplanung (Scope).
 
 ## Erledigt
 - [x] M0 Setup: `jarvis/` angelegt (Repo `Claude-code` war schon ein Git-Repo, daher kein
@@ -33,7 +114,6 @@ danach zu JARVIS weiter.
   Sperre mit 429), `app/netguard.py` (ASGI-Middleware, 403 außerhalb erlaubter Netze),
   `app/tools/registry.py`, `app/main.py`. Verifiziert: `pytest` 43 passed;
   `uvicorn app.main:app` ohne config.yaml → klare Meldung, kein Stacktrace.
-
 - [x] M2 Tools: `app/tools/pc.py` (pc_shutdown → nur confirm_required, Ausführung nur über
   `POST /api/confirm/{id}`, 30 s gültig, einmalig; pc_shutdown_cancel = `shutdown /a`),
   `app/tools/led.py` (WLED-JSON-API laut Doku kno.wled.ge, gelesen über
@@ -43,8 +123,7 @@ danach zu JARVIS weiter.
   `scripts/probe.py` (nur GET). Verifiziert: `pytest` 81 passed (subprocess gemockt,
   HTTP per httpx.MockTransport, Dummy-Skript `tests/dummy_script.py`).
 - [ ] ESPHome-Probe gegen das echte Gerät: aus der Cloud-Umgebung NICHT möglich
-  ("Destination IP is in a private/reserved range"). → User-Aufgabe.
-
+  ("Destination IP is in a private/reserved range"). → User-Aufgabe (Nächste Schritte, Punkt 4).
 - [x] M3 LLM: `app/llm.py` (Ollama `/api/chat`, stream=false, tools aus Registry,
   temperature 0.2, keep_alive aus Config, max. 4 Tool-Runden, Gesamt-Timeout per
   `asyncio.timeout`; Fehler: nicht erreichbar / 404 Modell fehlt / "does not support tools"),
@@ -52,7 +131,6 @@ danach zu JARVIS weiter.
   `scripts/pick_model.py` sucht das kleinste Modell mit capability "tools".
   Verifiziert: `pytest` 124 passed (Ollama gemockt: Tool-Call, unbekanntes Tool abgelehnt,
   Schleifenlimit, Fallback bei Verbindungsfehler/404/400/500/Timeout).
-
 - [x] M4 Oberfläche `web/index.html`: Single-File, keine externen Ressourcen, Token-Dialog
   (localStorage `jarvis.token`), Statusleiste (Server/LLM), Kacheln Licht/Klima/Skripte/PC,
   Chat mit Tool-Chips, Bestätigen-Dialog mit Countdown. Nutzt `/api/tools/*` direkt.
@@ -60,7 +138,6 @@ danach zu JARVIS weiter.
   config.example.yaml, `GET /` 200, `/api/tools` ohne Token 401, keine externen Ressourcen,
   alle in der UI verwendeten Tool-Namen existieren in der Registry) + manueller
   Playwright-Durchlauf (390×844) gegen Fake-WLED/ESPHome: keine JS-Fehler.
-
 - [x] M5 `launcher/wake.html`: Einstellungen (MAC, MyFRITZ!-Host, UDP-Port, JARVIS-URL) nur in
   localStorage (`jarvis.wake.settings`), "PC starten" öffnet
   `https://www.depicus.com/wake-on-lan/woli?m=<MAC ohne Trenner>&i=<Host>&s=255.255.255.255&p=<Port>`,
@@ -69,12 +146,90 @@ danach zu JARVIS weiter.
   Link. Verifiziert: `tests/web/wake.test.mjs` (Playwright/Chromium, 5 Fälle) läuft über
   `tests/test_wake_launcher.py` in pytest (wird übersprungen, wenn Node/Playwright fehlen).
   Auf einem echten Handy NICHT getestet → User-Aufgabe.
+- [x] M6 Betrieb: `app/__main__.py`, `scripts/start.ps1`, `scripts/install_autostart.ps1`
+  (Verknüpfung in `[Environment]::GetFolderPath("Startup")`, WindowStyle 7, `-Remove`),
+  `scripts/stop.ps1`, `README.md` (Einrichtung, Firewall, Tailscale, Autostart, wake.html-
+  Einschränkungen, Test-Checkliste, Warnung "Niemals Port 8765 freigeben"), `uv.lock`.
+  Gesamtlauf: `pytest` 131 passed; `python -m app` mit Kopie von config.example.yaml startet,
+  `GET /api/health` 200, `GET /` 200, `/api/status`, `/api/tools`, `/api/tools/*`,
+  `/api/confirm/*` ohne Token 401 (6. Fehlversuch korrekt 429); Secret-Scan per `git grep`
+  (MAC-, IPv4-, Token-, Pfadmuster): nur Platzhalter/Testwerte.
+  **Die PowerShell-Skripte konnten nicht ausgeführt werden** (kein Windows/PowerShell in der
+  Entwicklungsumgebung) → nur per Code-Review geprüft.
 
 ## In Arbeit
-- M6 Betrieb: `scripts/start.ps1`, `scripts/install_autostart.ps1`, README, Gesamtlauf.
+- Nichts. Alle Meilensteine M0–M6 sind umgesetzt; offen sind nur Aufgaben am echten PC/Handy.
 
 ## Nächste Schritte
+User-Aufgaben (können nur am Ziel-PC/Handy erledigt werden), in dieser Reihenfolge:
+1. **Umgebung prüfen** (PowerShell): `winver`, `python --version` (≥ 3.11), `uv --version`,
+   `ollama --version`, `ollama list`. Danach im Ordner `jarvis`: `uv sync` und
+   `.venv\Scripts\python.exe -m pytest` (erwartet: alles grün; der wake.html-Browsertest wird
+   ohne Node/Playwright übersprungen). Bei Fehlern unter Windows die Meldung hier eintragen.
+2. **Config ausfüllen:** `copy config.example.yaml config.yaml`, dann alle `TODO`-Werte:
+   `wled.base_url`, beide `sensors[*].base_url` + `entity_id` (exakter Entitätsname aus der
+   ESPHome-YAML), `scripts[0].cwd` + `command` (CS2-Skript als Argumentliste),
+   `llm.model` (Punkt 3).
+3. **Modell wählen:** `.venv\Scripts\python.exe scripts\pick_model.py`. Gibt es kein
+   installiertes Modell mit capability `tools`, ein kleines Tool-Modell von
+   https://ollama.com/search?c=tools ziehen (`ollama pull <name>`), Skript erneut ausführen und
+   den Namen in `llm.model` eintragen. Bis dahin läuft JARVIS mit dem Regel-Parser.
+4. **ESPHome prüfen (nur lesen):** `.venv\Scripts\python.exe scripts\probe.py --esphome
+   http://<IP des ESPHome-Geräts> --entity "<Sensorname>"`. Liefert `/` keinen ESPHome-
+   Webserver (Fehler/404), in der ESPHome-YAML ergänzen und selbst flashen:
+   ```yaml
+   web_server:
+     port: 80
+   ```
+   Falls ein BME280 noch fehlt, ist das eine eigene Firmware-Aufgabe (nicht Teil von JARVIS).
+   Danach `scripts\probe.py` ohne Argumente: alle Sensoren müssen HTTP 200 liefern.
+5. **Erster Start:** `powershell -ExecutionPolicy Bypass -File scripts\start.ps1`; Token aus
+   der Konsole notieren (steht auch in `secrets.yaml`).
+6. **Firewall (einmalig mit Adminrechten)** – Befehle in README Abschnitt 5. Vorher
+   `Get-NetConnectionProfile` (Heimnetz = Private) und `Get-NetAdapter` (Name des
+   Tailscale-Adapters) prüfen.
+7. **Tailscale** auf PC und Handy einrichten (README Abschnitt 6), Tailscale-IP des PCs
+   notieren (`tailscale ip -4`).
+8. **Erster echter LED-Schalttest** über die Oberfläche: An, Aus, Helligkeit, eine Farbe,
+   ein Effekt; Preset per Name testen (bestätigt, dass `GET /presets.json` so funktioniert).
+9. **CS2-Skript** über die Kachel starten/stoppen; JARVIS neu starten und prüfen, dass der
+   Status "läuft" erhalten bleibt. Prüfen, ob der sanfte Stop reicht oder nach 5 s hart
+   beendet wird (Ergebnis `stopped` vs. `killed` in der Antwort).
+10. **Herunterfahren testen:** Dialog → Abbrechen (nichts passiert); dann Bestätigen und in
+    der PC-Kachel "Abbrechen" drücken (`shutdown /a`); zuletzt einmal echt herunterfahren.
+11. **Praxistest wake.html:** Datei aufs Handy kopieren, im Browser öffnen, Einstellungen
+    ausfüllen. PC aus, Handy auf mobilen Daten mit Tailscale an, "PC starten" → nach dem
+    Hochfahren muss JARVIS automatisch öffnen. Klappt das Öffnen der lokalen Datei nicht,
+    Einschränkungen in README Abschnitt 8 beachten und Ergebnis hier notieren.
+12. **Autostart:** `powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1`,
+    ab-/anmelden, prüfen dass JARVIS ohne Fenster läuft (`state\logs\server.log`).
+
+Mögliche Weiterentwicklung (nicht beauftragt): eigener Sensor-Hub als weiterer Adapter in
+`app/tools/sensors.py` (`ADAPTERS`-Tabelle + neuer `type` in `SensorConfig`).
 
 ## Offene Fragen / Blocker
+- Kein Zugriff auf Ziel-PC, Ollama und Heimnetz aus der Entwicklungsumgebung: Modellwahl,
+  ESPHome-Entitäten und WLED-Verhalten sind ungeprüft (siehe Nächste Schritte 3, 4, 8).
+- Genaue Fehlertexte von Ollama für "Modell fehlt" / "keine Tools" nicht am echten System
+  geprüft; Erkennung über HTTP 404 bzw. Teilstring "does not support tools".
+- `GET /presets.json` für Preset-Namen ist in der JSON-API-Doku nicht als Route gelistet
+  (nur als Datei erwähnt) → am Gerät bestätigen.
+- Ob der Tailscale-Adapter unter Windows "Tailscale" heißt und welches Netzwerkprofil er hat,
+  ist ungeprüft (README nennt die Prüfbefehle).
+- Ob `uv venv` unter Windows `pythonw.exe` anlegt, ist ungeprüft; `install_autostart.ps1`
+  fällt sonst auf `python.exe` (minimiert) zurück.
+- Entscheidung User: Soll das CS2-Skript mit eigenem Fenster laufen (`hide_window: false`,
+  Standard) oder unsichtbar mit Log-Datei (`hide_window: true`)?
 
 ## Konventionen
+- Sprache: UI-Texte, Fehlermeldungen, Kommentare und Commits auf Deutsch; Code-Bezeichner Englisch.
+- Python ≥ 3.11, `from __future__ import annotations`, Zeilenlänge ~110, keine neuen
+  Abhängigkeiten ohne Versionsprüfung.
+- Tools: Name `bereich_aktion` (`led_power`), Parameter als pydantic-Modell mit
+  `extra="forbid"`, Fehler für den User als `ToolError` mit verständlichem deutschen Text.
+- Geräte nur über `ctx.http` (in Tests per `httpx.MockTransport` ersetzt); Prozesse in Tests
+  immer mocken (`pc.subprocess.run`, `pc.is_windows`).
+- Keine echten MACs, IPs, Hostnamen, Token oder Pfade im Repo; Beispiele mit `TODO`,
+  `AA:BB:CC:DD:EE:FF`, `beispiel.myfritz.net`.
+- Commits: ein Commit pro Meilenstein, Format `JARVIS M<n>: <kurze Beschreibung>`.
+- Branch: `claude/affectionate-pasteur-utoby7`.

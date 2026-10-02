@@ -2,7 +2,7 @@
 
 Adapter `esphome_rest` nutzt die REST-API des ESPHome-Webservers (Komponente `web_server:`):
 GET /sensor/<entity_name>  →  {"id": "sensor/<name>", "state": "21.4 °C", "value": 21.4}
-Ab ESPHome 2026.x ist <entity_name> der Name aus der YAML (URL-kodiert); ältere Firmware nutzt
+Bei aktueller Firmware ist <entity_name> der Name aus der YAML (URL-kodiert); ältere Firmware nutzt
 die object_id (z. B. bme280_temperature). Bei 404 wird deshalb die object_id-Form probiert.
 """
 
