@@ -1,0 +1,16 @@
+# Lokale Konfiguration und Geheimnisse – niemals committen
+config.yaml
+secrets.yaml
+state/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editoren / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
