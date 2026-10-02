@@ -34,8 +34,19 @@ danach zu JARVIS weiter.
   `app/tools/registry.py`, `app/main.py`. Verifiziert: `pytest` 43 passed;
   `uvicorn app.main:app` ohne config.yaml → klare Meldung, kein Stacktrace.
 
+- [x] M2 Tools: `app/tools/pc.py` (pc_shutdown → nur confirm_required, Ausführung nur über
+  `POST /api/confirm/{id}`, 30 s gültig, einmalig; pc_shutdown_cancel = `shutdown /a`),
+  `app/tools/led.py` (WLED-JSON-API laut Doku kno.wled.ge, gelesen über
+  github.com/wled/WLED-Docs `docs/interfaces/json-api.md`), `app/tools/sensors.py`
+  (Adapter `esphome_rest`, 3 s Timeout, Fehler pro Sensor), `app/tools/scripts.py`
+  (Popen mit Argumentliste, eigene Prozessgruppe, PID+Startzeit in `state/scripts.json`).
+  `scripts/probe.py` (nur GET). Verifiziert: `pytest` 81 passed (subprocess gemockt,
+  HTTP per httpx.MockTransport, Dummy-Skript `tests/dummy_script.py`).
+- [ ] ESPHome-Probe gegen das echte Gerät: aus der Cloud-Umgebung NICHT möglich
+  ("Destination IP is in a private/reserved range"). → User-Aufgabe.
+
 ## In Arbeit
-- M2 Tools (pc, led, sensors, scripts) – bisher nur Platzhalter in `jarvis/app/tools/`.
+- M3 LLM-Agent (`app/llm.py`) und Regel-Parser (`app/fallback.py`) – noch Platzhalter.
 
 ## Nächste Schritte
 
