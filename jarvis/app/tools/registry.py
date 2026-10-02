@@ -146,3 +146,22 @@ class Registry:
         else:
             result = await anyio.to_thread.run_sync(tool.func, self.ctx, params)
         return result if isinstance(result, dict) else {"result": result}
+
+
+async def run_recorded(registry: Registry, name: str, args: Any, *, source: str) -> dict:
+    """Tool ausführen und das Ergebnis als Protokolleintrag für die UI zurückgeben.
+
+    Wirft nie: Fehler landen im Eintrag (ok=False), unbekannte Tools zusätzlich mit rejected=True.
+    """
+    record: dict[str, Any] = {"tool": name, "args": args if isinstance(args, dict) else {}, "ok": False}
+    try:
+        record["result"] = await registry.execute(name, args, source=source)
+        record["ok"] = True
+    except ToolNotFound as exc:
+        record["error"] = str(exc)
+        record["rejected"] = True
+    except ToolError as exc:
+        record["error"] = str(exc)
+    except Exception as exc:  # pragma: no cover - Schutz gegen Programmierfehler in Tools
+        record["error"] = f"Interner Fehler in {name}: {type(exc).__name__}"
+    return record

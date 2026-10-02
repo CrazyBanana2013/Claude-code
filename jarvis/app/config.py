@@ -66,6 +66,8 @@ class LLMConfig(_Strict):
     timeout: float = Field(60, gt=0, le=600)
     temperature: float = Field(0.2, ge=0, le=2)
     max_tool_rounds: int = Field(4, ge=1, le=10)
+    # Nur für "Thinking"-Modelle: false spart Zeit. null = Parameter nicht senden.
+    think: bool | None = None
 
     @property
     def usable(self) -> bool:

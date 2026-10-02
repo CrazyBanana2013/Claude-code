@@ -45,8 +45,16 @@ danach zu JARVIS weiter.
 - [ ] ESPHome-Probe gegen das echte Gerät: aus der Cloud-Umgebung NICHT möglich
   ("Destination IP is in a private/reserved range"). → User-Aufgabe.
 
+- [x] M3 LLM: `app/llm.py` (Ollama `/api/chat`, stream=false, tools aus Registry,
+  temperature 0.2, keep_alive aus Config, max. 4 Tool-Runden, Gesamt-Timeout per
+  `asyncio.timeout`; Fehler: nicht erreichbar / 404 Modell fehlt / "does not support tools"),
+  `app/fallback.py` (Regel-Parser), `POST /api/chat` → `{reply, tool_calls, source, llm_error?}`.
+  `scripts/pick_model.py` sucht das kleinste Modell mit capability "tools".
+  Verifiziert: `pytest` 124 passed (Ollama gemockt: Tool-Call, unbekanntes Tool abgelehnt,
+  Schleifenlimit, Fallback bei Verbindungsfehler/404/400/500/Timeout).
+
 ## In Arbeit
-- M3 LLM-Agent (`app/llm.py`) und Regel-Parser (`app/fallback.py`) – noch Platzhalter.
+- M4 Oberfläche `web/index.html` – bisher Platzhalter.
 
 ## Nächste Schritte
 

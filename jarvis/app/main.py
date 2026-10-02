@@ -119,7 +119,11 @@ async def answer_chat(message: str, agent: OllamaAgent, registry: Registry, conf
     llm_error = None
     if config.llm.usable:
         outcome = await agent.chat(message)
-        if outcome.ok or outcome.tool_calls:
+        if outcome.ok:
+            return outcome.as_response()
+        if outcome.tool_calls:
+            # Es wurde schon etwas ausgeführt – nicht per Fallback doppelt ausführen.
+            outcome.reply = f"Teilweise erledigt, dann Fehler: {outcome.error}"
             return outcome.as_response()
         llm_error = outcome.error
     elif config.llm.force_fallback or not config.llm.enabled:

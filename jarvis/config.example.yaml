@@ -18,12 +18,13 @@ llm:
   enabled: true
   force_fallback: false    # true = nie Ollama fragen, nur den Regel-Parser nutzen
   base_url: "http://127.0.0.1:11434"
-  # Kleinstes installierte Modell mit Tool-Support, siehe README ("Modell auswählen").
+  # Kleinstes installiertes Modell mit Tool-Support, siehe README ("Modell auswählen").
   model: "TODO_MODELLNAME"
   keep_alive: "2m"         # danach gibt Ollama den VRAM wieder frei
   timeout: 60              # Sekunden für die gesamte Chat-Anfrage
   temperature: 0.2
   max_tool_rounds: 4
+  think: null              # bei Thinking-Modellen (z. B. qwen3) auf false setzen = schneller
 
 wled:
   base_url: "http://TODO-WLED-IP"   # z. B. http://<IP des WLED-ESP32>
