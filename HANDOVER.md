@@ -53,8 +53,16 @@ danach zu JARVIS weiter.
   Verifiziert: `pytest` 124 passed (Ollama gemockt: Tool-Call, unbekanntes Tool abgelehnt,
   Schleifenlimit, Fallback bei Verbindungsfehler/404/400/500/Timeout).
 
+- [x] M4 Oberfläche `web/index.html`: Single-File, keine externen Ressourcen, Token-Dialog
+  (localStorage `jarvis.token`), Statusleiste (Server/LLM), Kacheln Licht/Klima/Skripte/PC,
+  Chat mit Tool-Chips, Bestätigen-Dialog mit Countdown. Nutzt `/api/tools/*` direkt.
+  Verifiziert: `tests/test_ui.py` (Server startet per uvicorn mit Kopie von
+  config.example.yaml, `GET /` 200, `/api/tools` ohne Token 401, keine externen Ressourcen,
+  alle in der UI verwendeten Tool-Namen existieren in der Registry) + manueller
+  Playwright-Durchlauf (390×844) gegen Fake-WLED/ESPHome: keine JS-Fehler.
+
 ## In Arbeit
-- M4 Oberfläche `web/index.html` – bisher Platzhalter.
+- M5 Handy-Launcher `launcher/wake.html`.
 
 ## Nächste Schritte
 

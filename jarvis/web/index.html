@@ -1,1 +1,487 @@
-<!doctype html><title>JARVIS</title><p>M4</p>
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05090f">
+<meta name="referrer" content="no-referrer">
+<title>JARVIS</title>
+<style>
+  :root {
+    --bg: #05090f;
+    --panel: #0b1520;
+    --panel-2: #0f1d2b;
+    --line: #17364a;
+    --text: #d6eef7;
+    --muted: #7a98a8;
+    --cyan: #3be3ff;
+    --cyan-dim: #1a6f80;
+    --ok: #41e39b;
+    --warn: #ffc457;
+    --bad: #ff5d6c;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 50% -200px, rgba(59, 227, 255, .10), transparent 70%),
+      repeating-linear-gradient(0deg, rgba(59, 227, 255, .025) 0 1px, transparent 1px 4px),
+      var(--bg);
+    padding: max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  }
+  main { max-width: 960px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 14px; margin: 4px 0 16px; }
+  .reactor {
+    width: 42px; height: 42px; border-radius: 50%; flex: none; position: relative;
+    border: 2px solid var(--cyan); box-shadow: 0 0 14px rgba(59, 227, 255, .6), inset 0 0 10px rgba(59, 227, 255, .5);
+    animation: pulse 3.2s ease-in-out infinite;
+  }
+  .reactor::before, .reactor::after { content: ""; position: absolute; border-radius: 50%; }
+  .reactor::before { inset: 6px; border: 2px dashed var(--cyan-dim); animation: spin 12s linear infinite; }
+  .reactor::after { inset: 14px; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+  @keyframes pulse { 50% { box-shadow: 0 0 22px rgba(59, 227, 255, .9), inset 0 0 14px rgba(59, 227, 255, .7); } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .reactor, .reactor::before { animation: none; } }
+  h1 { font-size: 20px; letter-spacing: .32em; margin: 0; font-weight: 600; color: var(--cyan); text-shadow: 0 0 10px rgba(59, 227, 255, .5); }
+  .status { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+  .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill::before { content: "●"; margin-right: 6px; color: var(--muted); }
+  .pill.ok::before { color: var(--ok); }
+  .pill.bad::before { color: var(--bad); }
+  .pill.warn::before { color: var(--warn); }
+  .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } .wide { grid-column: 1 / -1; } }
+  .tile {
+    background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px; position: relative; overflow: hidden;
+  }
+  .tile::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent); opacity: .55;
+  }
+  .tile h2 { margin: 0 0 10px; font-size: 12px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .tile h2 .grow { flex: 1; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, .btn {
+    font: inherit; color: var(--text); background: #0d2333; border: 1px solid var(--cyan-dim);
+    border-radius: 10px; padding: 10px 14px; min-height: 44px; cursor: pointer; transition: background .15s, box-shadow .15s, transform .05s;
+  }
+  button:hover { background: #10304a; box-shadow: 0 0 10px rgba(59, 227, 255, .25); }
+  button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.primary { border-color: var(--cyan); color: #001018; background: var(--cyan); font-weight: 600; }
+  button.danger { border-color: #7a2630; background: #2a0d12; color: #ffc6cc; }
+  button.small { min-height: 34px; padding: 6px 10px; font-size: 13px; }
+  button.icon { min-height: 34px; padding: 4px 10px; font-size: 13px; }
+  .grow { flex: 1; }
+  input[type=range] { width: 100%; accent-color: var(--cyan); height: 32px; }
+  input[type=text], input[type=password], textarea {
+    font: inherit; color: var(--text); background: #07121b; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; min-height: 44px; width: 100%;
+  }
+  input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 8px; margin-top: 10px; }
+  .swatch { min-height: 40px; padding: 0; border-radius: 10px; border: 1px solid rgba(255, 255, 255, .15); }
+  input[type=color] { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 10px; background: none; padding: 2px; }
+  .label { font-size: 13px; color: var(--muted); }
+  .big { font-size: 30px; font-weight: 600; color: var(--cyan); text-shadow: 0 0 8px rgba(59, 227, 255, .35); }
+  .sensors { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .sensor .err { color: var(--warn); font-size: 13px; }
+  .scripts { display: grid; gap: 8px; }
+  .script { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.todo { background: var(--warn); }
+  .chat { display: flex; flex-direction: column; gap: 10px; }
+  .log { max-height: 46vh; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+  .msg { padding: 9px 12px; border-radius: 12px; max-width: 88%; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.me { align-self: flex-end; background: #0f3346; border: 1px solid var(--cyan-dim); }
+  .msg.bot { align-self: flex-start; background: #0a1822; border: 1px solid var(--line); }
+  .msg.err { border-color: #7a2630; color: #ffc6cc; }
+  .meta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+  .chip.ok { border-color: #1f6b4b; color: var(--ok); }
+  .chip.bad { border-color: #7a2630; color: var(--bad); }
+  form.send { display: flex; gap: 8px; }
+  dialog {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--cyan-dim); border-radius: var(--radius);
+    padding: 18px; width: min(420px, calc(100vw - 32px)); box-shadow: 0 0 40px rgba(59, 227, 255, .2);
+  }
+  dialog::backdrop { background: rgba(0, 5, 10, .75); backdrop-filter: blur(2px); }
+  dialog h3 { margin: 0 0 8px; color: var(--cyan); letter-spacing: .1em; }
+  .countdown { font-size: 42px; text-align: center; color: var(--warn); font-variant-numeric: tabular-nums; margin: 8px 0; }
+  .toast {
+    position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
+    background: #13202b; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; max-width: calc(100vw - 32px);
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 10;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  .toast.bad { border-color: #7a2630; color: #ffc6cc; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin: 18px 0 4px; }
+  footer button { min-height: 30px; padding: 4px 10px; font-size: 12px; background: none; border-color: var(--line); color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="reactor" aria-hidden="true"></div>
+    <h1>JARVIS</h1>
+    <div class="status">
+      <span id="st-server" class="pill">Server</span>
+      <span id="st-llm" class="pill">LLM</span>
+    </div>
+  </header>
+
+  <section class="grid">
+    <div class="tile">
+      <h2><span class="grow">Licht</span><span id="led-state" class="label"></span></h2>
+      <div class="row">
+        <button class="grow" data-tool="led_power" data-args='{"state":"on"}'>An</button>
+        <button class="grow" data-tool="led_power" data-args='{"state":"off"}'>Aus</button>
+        <button class="icon" id="led-refresh" title="Zustand lesen" aria-label="Zustand lesen">⟳</button>
+      </div>
+      <div style="margin-top:12px">
+        <div class="row"><span class="label grow">Helligkeit</span><span id="bri-val" class="label">–</span></div>
+        <input id="bri" type="range" min="0" max="100" step="1" value="50" aria-label="Helligkeit">
+      </div>
+      <div class="swatches" id="swatches"></div>
+    </div>
+
+    <div class="tile">
+      <h2><span class="grow">Klima</span><button class="icon" id="sensor-refresh" aria-label="Sensoren lesen">⟳</button></h2>
+      <div class="sensors" id="sensors"><span class="label">Noch nicht gelesen.</span></div>
+      <div class="label" id="sensor-time" style="margin-top:8px"></div>
+    </div>
+
+    <div class="tile">
+      <h2><span class="grow">Skripte</span><button class="icon" id="scripts-refresh" aria-label="Skripte aktualisieren">⟳</button></h2>
+      <div class="scripts" id="scripts"><span class="label">Lade …</span></div>
+    </div>
+
+    <div class="tile">
+      <h2>PC</h2>
+      <div class="row">
+        <button class="danger grow" id="shutdown">Herunterfahren</button>
+        <button class="grow" data-tool="pc_shutdown_cancel">Abbrechen</button>
+      </div>
+      <p class="label" style="margin:10px 0 0">Herunterfahren startet erst nach Bestätigung (15 s Vorlauf).</p>
+    </div>
+
+    <div class="tile wide chat">
+      <h2>Befehl</h2>
+      <div class="log" id="log" aria-live="polite"></div>
+      <form class="send" id="chat-form" autocomplete="off">
+        <input type="text" id="chat-input" maxlength="500" placeholder="z. B. „Licht auf 40 % und blau“" aria-label="Nachricht">
+        <button class="primary" type="submit">Senden</button>
+      </form>
+    </div>
+  </section>
+
+  <footer><button id="logout">Token vergessen</button></footer>
+</main>
+
+<dialog id="token-dialog">
+  <form method="dialog" id="token-form">
+    <h3>Zugang</h3>
+    <p class="label">API-Token eingeben. Er steht beim ersten Serverstart in der Konsole bzw. in <code>secrets.yaml</code>.</p>
+    <input type="password" id="token-input" autocomplete="off" placeholder="Token" required minlength="20">
+    <div class="row" style="margin-top:12px"><button class="primary grow" type="submit">Speichern</button></div>
+  </form>
+</dialog>
+
+<dialog id="confirm-dialog">
+  <h3 id="confirm-title">Bestätigen</h3>
+  <p id="confirm-text">PC herunterfahren?</p>
+  <div class="countdown" id="confirm-count">30</div>
+  <div class="row">
+    <button class="grow" id="confirm-no">Abbrechen</button>
+    <button class="danger grow" id="confirm-yes">Bestätigen</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const TOKEN_KEY = "jarvis.token";
+  const COLORS = [
+    ["rot", "#ff0000"], ["orange", "#ff5a00"], ["gelb", "#ffbe00"], ["grün", "#00ff00"],
+    ["blau", "#0000ff"], ["lila", "#8c00ff"], ["pink", "#ff1478"], ["weiß", "#ffffff"], ["warmweiß", "#ffaa50"],
+  ];
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* privat/blockiert */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* egal */ } },
+  };
+  let token = store.get(TOKEN_KEY);
+
+  // ---------- Hilfen ----------
+  let toastTimer;
+  function toast(text, bad = false) {
+    const t = $("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = "toast" + (bad ? " bad" : ""); }, bad ? 5000 : 2500);
+  }
+
+  function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "class") node.className = v;
+      else if (k === "text") node.textContent = v;
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
+    }
+    for (const c of children) if (c != null) node.append(c);
+    return node;
+  }
+
+  function askToken() {
+    const d = $("token-dialog");
+    if (!d.open) { $("token-input").value = ""; d.showModal(); }
+  }
+
+  async function api(path, body, method = "POST") {
+    if (!token) { askToken(); throw new Error("Kein Token"); }
+    const opts = { method, headers: { "Authorization": "Bearer " + token } };
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    let res;
+    try {
+      res = await fetch(path, opts);
+    } catch {
+      setPill("st-server", "bad", "Server offline");
+      throw new Error("Server nicht erreichbar");
+    }
+    setPill("st-server", "ok", "Server");
+    let data = {};
+    try { data = await res.json(); } catch { /* leer */ }
+    if (res.status === 401) {
+      token = null; store.del(TOKEN_KEY); askToken();
+      throw new Error("Token ungültig");
+    }
+    if (!res.ok) {
+      const msg = data.error || (typeof data.detail === "string" ? data.detail : null) || ("HTTP " + res.status);
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  async function tool(name, args = {}) {
+    const data = await api("/api/tools/" + encodeURIComponent(name), args);
+    const result = data.result || {};
+    if (result.status === "confirm_required") openConfirm(result);
+    return result;
+  }
+
+  async function guarded(button, fn) {
+    if (button) button.disabled = true;
+    try { return await fn(); }
+    catch (e) { if (e.message !== "Kein Token") toast(e.message, true); }
+    finally { if (button) button.disabled = false; }
+  }
+
+  function setPill(id, cls, text) {
+    const p = $(id);
+    p.className = "pill " + cls;
+    p.textContent = text;
+  }
+
+  // ---------- Status ----------
+  async function refreshStatus() {
+    try {
+      const h = await fetch("/api/health");
+      setPill("st-server", h.ok ? "ok" : "bad", h.ok ? "Server" : "Server-Fehler");
+    } catch { setPill("st-server", "bad", "Server offline"); return; }
+    if (!token) return;
+    try {
+      const s = await api("/api/status", undefined, "GET");
+      const l = s.llm || {};
+      if (!l.enabled) setPill("st-llm", "warn", "LLM aus · Regeln");
+      else if (!l.reachable) setPill("st-llm", "bad", "LLM offline");
+      else if (l.model_installed === false) setPill("st-llm", "bad", "Modell fehlt");
+      else if (l.tools_supported === false) setPill("st-llm", "bad", "Modell ohne Tools");
+      else setPill("st-llm", "ok", "LLM " + (l.model || ""));
+    } catch { /* Meldung kam schon */ }
+  }
+
+  // ---------- Licht ----------
+  function showLed(r) {
+    if (!r || r.on === undefined) return;
+    $("led-state").textContent = r.on ? "an · " + r.brightness_percent + " %" : "aus";
+    if (typeof r.brightness_percent === "number") {
+      $("bri").value = r.on ? r.brightness_percent : 0;
+      $("bri-val").textContent = (r.on ? r.brightness_percent : 0) + " %";
+    }
+  }
+
+  document.querySelectorAll("[data-tool]").forEach((b) => {
+    b.addEventListener("click", () => guarded(b, async () => {
+      const r = await tool(b.dataset.tool, JSON.parse(b.dataset.args || "{}"));
+      if (b.dataset.tool.startsWith("led_")) showLed(r);
+      if (r.message) toast(r.message);
+    }));
+  });
+
+  $("led-refresh").addEventListener("click", (e) => guarded(e.currentTarget, async () => showLed(await tool("led_status"))));
+
+  const bri = $("bri");
+  bri.addEventListener("input", () => { $("bri-val").textContent = bri.value + " %"; });
+  bri.addEventListener("change", () => guarded(null, async () => showLed(await tool("led_brightness", { percent: Number(bri.value) }))));
+
+  const sw = $("swatches");
+  for (const [name, hex] of COLORS) {
+    sw.append(el("button", {
+      class: "swatch", title: name, "aria-label": "Farbe " + name, style: "background:" + hex,
+      onclick: (e) => guarded(e.currentTarget, async () => showLed(await tool("led_color", { color: name }))),
+    }));
+  }
+  const picker = el("input", { type: "color", value: "#3be3ff", "aria-label": "Eigene Farbe" });
+  picker.addEventListener("change", () => guarded(null, async () => showLed(await tool("led_color", { color: picker.value }))));
+  sw.append(picker);
+
+  // ---------- Sensoren ----------
+  async function readSensors(btn) {
+    await guarded(btn, async () => {
+      const r = await tool("sensors_read");
+      const box = $("sensors");
+      box.replaceChildren();
+      const list = r.sensors || [];
+      if (!list.length) box.append(el("span", { class: "label", text: r.message || "Keine Sensoren." }));
+      let newest = null;
+      for (const s of list) {
+        const value = s.error ? null : String(s.value.toFixed(1)).replace(".", ",") + " " + (s.unit || "");
+        box.append(el("div", { class: "sensor" },
+          el("div", { class: "label", text: s.name }),
+          value ? el("div", { class: "big", text: value }) : el("div", { class: "err", text: s.error }),
+        ));
+        if (s.timestamp) newest = s.timestamp;
+      }
+      $("sensor-time").textContent = newest ? "Stand: " + new Date(newest).toLocaleTimeString("de-DE") : "";
+    });
+  }
+  $("sensor-refresh").addEventListener("click", (e) => readSensors(e.currentTarget));
+
+  // ---------- Skripte ----------
+  function renderScripts(list) {
+    const box = $("scripts");
+    box.replaceChildren();
+    if (!list.length) { box.append(el("span", { class: "label", text: "Keine Skripte konfiguriert." })); return; }
+    for (const s of list) {
+      const dot = el("span", { class: "dot" + (s.running ? " on" : s.configured ? "" : " todo") });
+      const info = el("div", { class: "grow" },
+        el("div", { text: s.label }),
+        el("div", { class: "label", text: !s.configured ? "nicht eingerichtet (TODO)" : s.running ? "läuft · PID " + s.pid : "gestoppt" }),
+      );
+      const btn = el("button", {
+        class: "small" + (s.running ? " danger" : ""), text: s.running ? "Stoppen" : "Starten",
+        onclick: (e) => guarded(e.currentTarget, async () => {
+          await tool(s.running ? "scripts_stop" : "scripts_start", { script_id: s.id });
+          await loadScripts();
+        }),
+      });
+      box.append(el("div", { class: "script" }, dot, info, btn));
+    }
+  }
+  async function loadScripts(btn) {
+    await guarded(btn, async () => renderScripts((await tool("scripts_list")).scripts || []));
+  }
+  $("scripts-refresh").addEventListener("click", (e) => loadScripts(e.currentTarget));
+
+  // ---------- Herunterfahren mit Bestätigung ----------
+  let confirmTimer = null;
+  let confirmId = null;
+  function closeConfirm() {
+    clearInterval(confirmTimer); confirmTimer = null; confirmId = null;
+    if ($("confirm-dialog").open) $("confirm-dialog").close();
+  }
+  function openConfirm(r) {
+    confirmId = r.confirm_id;
+    let left = Number(r.expires_in) || 30;
+    $("confirm-text").textContent = "PC herunterfahren? Er fährt 15 s nach der Bestätigung herunter.";
+    $("confirm-count").textContent = left;
+    clearInterval(confirmTimer);
+    confirmTimer = setInterval(() => {
+      left -= 1;
+      $("confirm-count").textContent = Math.max(left, 0);
+      if (left <= 0) { closeConfirm(); toast("Bestätigung abgelaufen."); }
+    }, 1000);
+    const d = $("confirm-dialog");
+    if (!d.open) d.showModal();
+  }
+  $("confirm-no").addEventListener("click", closeConfirm);
+  $("confirm-dialog").addEventListener("cancel", closeConfirm);
+  $("confirm-yes").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
+    if (!confirmId) return;
+    const id = confirmId;
+    closeConfirm();
+    const r = await api("/api/confirm/" + encodeURIComponent(id));
+    toast((r.result && r.result.message) || "Ausgeführt.");
+  }));
+  $("shutdown").addEventListener("click", (e) => guarded(e.currentTarget, () => tool("pc_shutdown")));
+
+  // ---------- Chat ----------
+  function addMsg(text, who, calls = [], extra = "") {
+    const meta = el("div", { class: "meta" });
+    for (const c of calls) meta.append(el("span", { class: "chip " + (c.ok ? "ok" : "bad"), text: (c.ok ? "✓ " : "✗ ") + c.tool }));
+    if (extra) meta.append(el("span", { text: extra }));
+    const node = el("div", { class: "msg " + who }, el("div", { text }), meta.childNodes.length ? meta : null);
+    $("log").append(node);
+    $("log").scrollTop = $("log").scrollHeight;
+  }
+  $("chat-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("chat-input");
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    addMsg(text, "me");
+    const btn = e.currentTarget.querySelector("button");
+    guarded(btn, async () => {
+      try {
+        const r = await api("/api/chat", { message: text });
+        const via = r.source === "fallback" ? "Regel-Parser" + (r.llm_error ? " · " + r.llm_error : "") : "LLM";
+        addMsg(r.reply || "–", "bot", r.tool_calls || [], via);
+        for (const c of r.tool_calls || []) {
+          if (c.ok && c.result && c.result.status === "confirm_required") openConfirm(c.result);
+          if (c.ok && c.tool.startsWith("led_")) showLed(c.result);
+          if (c.ok && c.tool.startsWith("scripts_")) loadScripts();
+        }
+      } catch (err) {
+        addMsg(err.message, "bot err");
+      }
+    });
+  });
+
+  // ---------- Token ----------
+  $("token-form").addEventListener("submit", () => {
+    const v = $("token-input").value.trim();
+    if (!v) return;
+    token = v; store.set(TOKEN_KEY, v);
+    init();
+  });
+  $("logout").addEventListener("click", () => { token = null; store.del(TOKEN_KEY); askToken(); });
+
+  function init() {
+    refreshStatus();
+    if (!token) { askToken(); return; }
+    loadScripts();
+    readSensors();
+    // Beim Start still: ein noch nicht eingerichteter LED-Strip soll keine Fehlermeldung werfen.
+    tool("led_status").then(showLed).catch((e) => { $("led-state").textContent = e.message.slice(0, 60); });
+  }
+  init();
+  setInterval(refreshStatus, 30000);
+})();
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -146,8 +147,8 @@ def _default_app() -> FastAPI:
         log.warning(warning)
     return create_app(
         config,
-        secrets_path=PROJECT_DIR / "secrets.yaml",
-        state_dir=PROJECT_DIR / "state",
+        secrets_path=Path(os.environ.get("JARVIS_SECRETS", PROJECT_DIR / "secrets.yaml")),
+        state_dir=Path(os.environ.get("JARVIS_STATE", PROJECT_DIR / "state")),
     )
 
 
