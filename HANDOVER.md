@@ -61,8 +61,17 @@ danach zu JARVIS weiter.
   alle in der UI verwendeten Tool-Namen existieren in der Registry) + manueller
   Playwright-Durchlauf (390×844) gegen Fake-WLED/ESPHome: keine JS-Fehler.
 
+- [x] M5 `launcher/wake.html`: Einstellungen (MAC, MyFRITZ!-Host, UDP-Port, JARVIS-URL) nur in
+  localStorage (`jarvis.wake.settings`), "PC starten" öffnet
+  `https://www.depicus.com/wake-on-lan/woli?m=<MAC ohne Trenner>&i=<Host>&s=255.255.255.255&p=<Port>`,
+  danach alle 3 s `fetch(<URL>/api/health, {mode:"no-cors"})` mit 2,5 s Abbruch, bei Erfolg
+  "JARVIS öffnen" + Weiterleitung nach 3 s ("Hier bleiben" stoppt sie). Pop-up-blockiert →
+  Link. Verifiziert: `tests/web/wake.test.mjs` (Playwright/Chromium, 5 Fälle) läuft über
+  `tests/test_wake_launcher.py` in pytest (wird übersprungen, wenn Node/Playwright fehlen).
+  Auf einem echten Handy NICHT getestet → User-Aufgabe.
+
 ## In Arbeit
-- M5 Handy-Launcher `launcher/wake.html`.
+- M6 Betrieb: `scripts/start.ps1`, `scripts/install_autostart.ps1`, README, Gesamtlauf.
 
 ## Nächste Schritte
 

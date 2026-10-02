@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05090f">
+<meta name="referrer" content="no-referrer">
+<title>JARVIS Start</title>
+<style>
+  :root { --bg:#05090f; --panel:#0b1520; --line:#17364a; --text:#d6eef7; --muted:#7a98a8; --cyan:#3be3ff; --cyan-dim:#1a6f80; --ok:#41e39b; --warn:#ffc457; --bad:#ff5d6c; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    background: radial-gradient(900px 500px at 50% 0, rgba(59,227,255,.12), transparent 70%), var(--bg);
+  }
+  .reactor { width: 120px; height: 120px; border-radius: 50%; position: relative; border: 3px solid var(--cyan-dim); transition: border-color .4s, box-shadow .4s; }
+  .reactor::before, .reactor::after { content: ""; position: absolute; border-radius: 50%; }
+  .reactor::before { inset: 14px; border: 3px dashed var(--cyan-dim); }
+  .reactor::after { inset: 38px; background: var(--cyan-dim); transition: background .4s, box-shadow .4s; }
+  .reactor.waiting { border-color: var(--warn); animation: pulse 1.6s ease-in-out infinite; }
+  .reactor.waiting::before { border-color: var(--warn); animation: spin 3s linear infinite; }
+  .reactor.online { border-color: var(--cyan); box-shadow: 0 0 30px rgba(59,227,255,.6); }
+  .reactor.online::after { background: var(--cyan); box-shadow: 0 0 22px var(--cyan); }
+  @keyframes pulse { 50% { box-shadow: 0 0 26px rgba(255,196,87,.55); } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .reactor, .reactor::before { animation: none !important; } }
+  h1 { margin: 0; letter-spacing: .32em; color: var(--cyan); font-weight: 600; font-size: 22px; }
+  #status { min-height: 1.5em; text-align: center; color: var(--muted); max-width: 420px; }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); } #status.warn { color: var(--warn); }
+  .buttons { display: flex; flex-direction: column; gap: 12px; width: min(420px, 100%); }
+  button, a.btn {
+    font: inherit; color: var(--text); background: #0d2333; border: 1px solid var(--cyan-dim); border-radius: 14px;
+    padding: 14px 18px; min-height: 52px; cursor: pointer; text-align: center; text-decoration: none; display: block;
+  }
+  button.primary { background: var(--cyan); color: #001018; border-color: var(--cyan); font-weight: 700; font-size: 19px; min-height: 64px; }
+  button.go { background: var(--ok); border-color: var(--ok); color: #00140b; font-weight: 700; font-size: 18px; }
+  button.link { background: none; border-color: var(--line); color: var(--muted); min-height: 44px; }
+  button:disabled { opacity: .5; }
+  [hidden] { display: none !important; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--cyan-dim); border-radius: 16px; width: min(440px, calc(100vw - 32px)); padding: 18px; }
+  dialog::backdrop { background: rgba(0,5,10,.8); }
+  dialog h2 { margin: 0 0 6px; color: var(--cyan); font-size: 18px; letter-spacing: .08em; }
+  label { display: block; margin-top: 12px; font-size: 14px; color: var(--muted); }
+  input { font: inherit; width: 100%; margin-top: 4px; padding: 11px 12px; min-height: 46px; border-radius: 10px; border: 1px solid var(--line); background: #07121b; color: var(--text); }
+  input:focus, button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .err { color: var(--bad); font-size: 14px; min-height: 1.2em; margin-top: 10px; }
+  .row { display: flex; gap: 10px; margin-top: 16px; } .row > * { flex: 1; }
+</style>
+</head>
+<body>
+  <div class="reactor" id="reactor" aria-hidden="true"></div>
+  <h1>JARVIS</h1>
+  <div id="status" role="status" aria-live="polite">Bereit.</div>
+
+  <div class="buttons">
+    <button class="primary" id="wake">PC starten</button>
+    <a class="btn" id="wake-link" hidden target="_blank" rel="noopener noreferrer">Wake-Seite öffnen (Pop-up wurde blockiert)</a>
+    <button class="go" id="open-jarvis" hidden>JARVIS öffnen</button>
+    <button id="stay" class="link" hidden>Hier bleiben</button>
+    <button id="direct">JARVIS direkt öffnen (PC läuft schon)</button>
+    <button id="stop-wait" class="link" hidden>Warten abbrechen</button>
+    <button id="settings-btn" class="link">Einstellungen</button>
+  </div>
+
+  <dialog id="settings">
+    <form id="settings-form" method="dialog" novalidate>
+      <h2>Einstellungen</h2>
+      <div class="hint">Wird nur auf diesem Gerät gespeichert (localStorage), nicht in der Datei.</div>
+      <label>MAC-Adresse des PCs
+        <input id="f-mac" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF">
+      </label>
+      <label>MyFRITZ!-Adresse (oder öffentlicher Hostname)
+        <input id="f-host" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="xxxx.myfritz.net">
+      </label>
+      <label>UDP-Port (Portfreigabe für WoL in der FRITZ!Box)
+        <input id="f-port" inputmode="numeric" autocomplete="off" placeholder="9">
+      </label>
+      <label>JARVIS-Adresse (Tailscale)
+        <input id="f-url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="http://100.x.y.z:8765">
+        <div class="hint">Mit http:// oder https:// und Port, ohne /api.</div>
+      </label>
+      <div class="err" id="f-err"></div>
+      <div class="row">
+        <button type="button" class="link" id="f-cancel">Abbrechen</button>
+        <button type="submit" class="go" id="f-save">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+<script>
+"use strict";
+const KEY = "jarvis.wake.settings";
+const POLL_INTERVAL_MS = 3000;
+const PROBE_TIMEOUT_MS = 2500;
+const MAX_WAIT_MS = 5 * 60 * 1000;
+const REDIRECT_DELAY_S = 3;
+const DEPICUS = "https://www.depicus.com/wake-on-lan/woli";
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- Einstellungen ----------
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch { return null; }
+}
+function saveSettings(s) {
+  try { localStorage.setItem(KEY, JSON.stringify(s)); return true; } catch { return false; }
+}
+
+function normalizeMac(value) {
+  const hex = String(value || "").replace(/[\s:.\-]/g, "").toUpperCase();
+  return /^[0-9A-F]{12}$/.test(hex) ? hex : null;
+}
+function normalizeHost(value) {
+  const host = String(value || "").trim().replace(/^[a-z]+:\/\//i, "").replace(/\/.*$/, "");
+  return /^[A-Za-z0-9.\-]+$/.test(host) && host.includes(".") ? host : null;
+}
+function normalizePort(value) {
+  const n = Number(String(value || "").trim());
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+}
+function normalizeUrl(value) {
+  try {
+    const u = new URL(String(value || "").trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.origin;
+  } catch { return null; }
+}
+function validate(raw) {
+  const s = { mac: normalizeMac(raw.mac), host: normalizeHost(raw.host), port: normalizePort(raw.port), url: normalizeUrl(raw.url) };
+  const errors = [];
+  if (!s.mac) errors.push("MAC: 12 Hex-Zeichen, z. B. AA:BB:CC:DD:EE:FF");
+  if (!s.host) errors.push("Adresse: Hostname wie xxxx.myfritz.net");
+  if (!s.port) errors.push("Port: Zahl 1–65535");
+  if (!s.url) errors.push("JARVIS-Adresse: z. B. http://100.x.y.z:8765");
+  return { settings: s, errors };
+}
+function isComplete(s) { return !!(s && s.mac && s.host && s.port && s.url); }
+
+function depicusUrl(s) {
+  const q = new URLSearchParams({ m: s.mac, i: s.host, s: "255.255.255.255", p: String(s.port) });
+  return DEPICUS + "?" + q.toString();
+}
+
+function openSettings() {
+  const s = loadSettings() || {};
+  $("f-mac").value = s.mac ? s.mac.match(/.{2}/g).join(":") : "";
+  $("f-host").value = s.host || "";
+  $("f-port").value = s.port || "9";
+  $("f-url").value = s.url || "";
+  $("f-err").textContent = "";
+  $("settings").showModal();
+}
+$("settings-form").addEventListener("submit", (e) => {
+  const { settings, errors } = validate({ mac: $("f-mac").value, host: $("f-host").value, port: $("f-port").value, url: $("f-url").value });
+  if (errors.length) { e.preventDefault(); $("f-err").textContent = errors.join(" · "); return; }
+  if (!saveSettings(settings)) { e.preventDefault(); $("f-err").textContent = "Speichern nicht möglich (privater Modus?)."; return; }
+  setStatus("Gespeichert.", "ok");
+});
+$("f-cancel").addEventListener("click", () => $("settings").close());
+$("settings-btn").addEventListener("click", openSettings);
+
+// ---------- Status ----------
+function setStatus(text, cls = "") { const el = $("status"); el.textContent = text; el.className = cls; }
+function setReactor(mode) { $("reactor").className = "reactor " + mode; }
+function show(id, visible) { $(id).hidden = !visible; }
+
+// ---------- Warten auf den PC ----------
+let waiting = false, waitStart = 0, pollTimer = null, redirectTimer = null;
+let generation = 0; // verhindert parallele Abfrageschleifen
+
+// Gilt als online, sobald der Server überhaupt antwortet. Mit mode "no-cors" ist die
+// Antwort "opaque" (Status nicht lesbar) – nur ein Netzwerkfehler/Timeout heißt offline.
+async function probe(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+  try {
+    await fetch(url + "/api/health?t=" + Date.now(), { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function stopWaiting() {
+  waiting = false;
+  generation += 1;
+  clearTimeout(pollTimer);
+  show("stop-wait", false);
+}
+
+async function pollLoop(url, gen) {
+  if (!waiting || gen !== generation) return;
+  const started = Date.now();
+  const online = await probe(url);
+  if (!waiting || gen !== generation) return;
+  if (online) { stopWaiting(); onOnline(url); return; }
+  const elapsed = Math.round((Date.now() - waitStart) / 1000);
+  if (Date.now() - waitStart > MAX_WAIT_MS) {
+    stopWaiting(); setReactor("");
+    setStatus("PC nach 5 Minuten nicht erreichbar. Tailscale auf dem Handy aktiv? WoL-Einstellungen prüfen.", "bad");
+    return;
+  }
+  setStatus("Warte auf PC … (" + elapsed + " s)", "warn");
+  pollTimer = setTimeout(() => pollLoop(url, gen), Math.max(0, POLL_INTERVAL_MS - (Date.now() - started)));
+}
+
+function startWaiting(url) {
+  stopWaiting();
+  clearInterval(redirectTimer);
+  show("open-jarvis", false); show("stay", false);
+  waiting = true; waitStart = Date.now();
+  setReactor("waiting");
+  setStatus("Warte auf PC …", "warn");
+  show("stop-wait", true);
+  pollLoop(url, generation);
+}
+
+function onOnline(url) {
+  setReactor("online");
+  show("open-jarvis", true); show("stay", true);
+  let left = REDIRECT_DELAY_S;
+  setStatus("PC ist online. Weiterleitung in " + left + " s …", "ok");
+  clearInterval(redirectTimer);
+  redirectTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) { clearInterval(redirectTimer); goJarvis(url); return; }
+    setStatus("PC ist online. Weiterleitung in " + left + " s …", "ok");
+  }, 1000);
+}
+
+function goJarvis(url) { window.location.href = url + "/"; }
+
+// ---------- Buttons ----------
+$("wake").addEventListener("click", () => {
+  const s = loadSettings();
+  if (!isComplete(s)) { openSettings(); return; }
+  const target = depicusUrl(s);
+  // Muss direkt im Klick passieren, sonst blockiert der Browser das Pop-up.
+  // Ohne "noopener"-Feature, denn damit liefert window.open immer null; danach trennen.
+  const win = window.open(target, "_blank");
+  if (win) { try { win.opener = null; } catch { /* egal */ } }
+  const link = $("wake-link");
+  link.href = target;
+  show("wake-link", !win);
+  startWaiting(s.url);
+  if (!win) setStatus("Pop-up blockiert – bitte den Link antippen. Warte auf PC …", "warn");
+});
+$("open-jarvis").addEventListener("click", () => { const s = loadSettings(); if (s) goJarvis(s.url); });
+$("stay").addEventListener("click", () => {
+  clearInterval(redirectTimer); show("stay", false);
+  setStatus("PC ist online.", "ok");
+});
+$("direct").addEventListener("click", () => {
+  const s = loadSettings();
+  if (!s || !s.url) { openSettings(); return; }
+  goJarvis(s.url);
+});
+$("stop-wait").addEventListener("click", () => { stopWaiting(); setReactor(""); setStatus("Warten abgebrochen."); });
+
+// Nach Rückkehr in den Tab sofort erneut prüfen (Hintergrund-Tabs drosseln Timer).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && waiting) {
+    clearTimeout(pollTimer);
+    generation += 1;
+    const s = loadSettings();
+    if (s) pollLoop(s.url, generation);
+  }
+});
+
+if (!isComplete(loadSettings())) {
+  setStatus("Bitte zuerst die Einstellungen ausfüllen.", "warn");
+  openSettings();
+}
+</script>
+</body>
+</html>
