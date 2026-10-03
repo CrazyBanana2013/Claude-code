@@ -175,7 +175,13 @@ Invoke-Test 'Install.cmd / Uninstall.cmd: Aufruf, Pause, Exitcode' {
     Assert-True ($install.Contains('set "JARVIS_RC=%ERRORLEVEL%"') -and $install.Contains('exit /b %JARVIS_RC%')) 'Exitcode weiterreichen'
     $uninstall = [System.IO.File]::ReadAllText((Join-Path $script:JarvisRoot 'Uninstall.cmd'))
     Assert-True ($uninstall.Contains('set "JARVIS_UNINSTALL_PS1=%~dp0scripts\uninstall.ps1"')) 'uninstall.ps1-Pfad'
-    Assert-True ($uninstall.Contains('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!JARVIS_UNINSTALL_PS1!" %*')) 'uninstall.ps1-Aufruf'
+    Assert-True ($uninstall.Contains('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!JARVIS_UNINSTALL_PS1!" !JARVIS_ARGS!')) 'uninstall.ps1-Aufruf'
+    # %* nur merken, solange DelayedExpansion aus ist (sonst verschluckt cmd ein "!" in den Argumenten).
+    $capture = $uninstall.IndexOf('set JARVIS_ARGS=%*')
+    $enable = $uninstall.IndexOf('setlocal EnableDelayedExpansion')
+    Assert-True ($capture -gt 0 -and $capture -lt $enable) 'Argumente vor EnableDelayedExpansion gemerkt'
+    $afterEnable = @($uninstall.Substring($enable) -split "`r?`n" | Where-Object { $_.Trim() -notlike 'rem *' })
+    Assert-Equal 0 @($afterEnable | Where-Object { $_.Contains('%*') }).Count 'kein %* nach EnableDelayedExpansion'
     Assert-True ($uninstall.Contains('cd /d "%TEMP%"')) 'verlaesst den Installationsordner'
     Assert-True ($uninstall.Contains('exit /b !JARVIS_RC!')) 'Exitcode weiterreichen'
     # Nach der oeffnenden Klammer darf nichts mehr ausserhalb des Blocks folgen (Datei wird geloescht).
@@ -184,6 +190,23 @@ Invoke-Test 'Install.cmd / Uninstall.cmd: Aufruf, Pause, Exitcode' {
     foreach ($text in @($install, $uninstall)) {
         Assert-True ($text.TrimStart().StartsWith('@echo off')) '@echo off'
         Assert-False ($text -match '(?m)^\s*:') 'keine Sprungmarken (robust auch bei LF-Zeilenenden)'
+    }
+}
+
+Invoke-Test 'Keine Aufrufe, die System-/Firewall-Einstellungen aendern (nur als Text angezeigt)' {
+    $forbidden = @('New-NetFirewallRule', 'Remove-NetFirewallRule', 'Set-NetFirewallRule', 'Set-NetFirewallProfile',
+        'Enable-NetFirewallRule', 'Disable-NetFirewallRule', 'Set-NetConnectionProfile', 'Register-ScheduledTask',
+        'Set-ItemProperty', 'New-ItemProperty', 'Set-ExecutionPolicy', 'netsh', 'schtasks', 'reg', 'Set-Acl')
+    foreach ($file in @($psFiles | Where-Object { (Get-RelName $_) -replace '\\', '/' -notlike 'tests/*' })) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+        foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            $name = $c.GetCommandName()
+            if ($name -and ($forbidden -contains $name -or $forbidden -contains ($name -replace '\.exe$', ''))) {
+                throw ('{0}: Aufruf von {1} in Zeile {2}' -f (Get-RelName $file), $name, $c.Extent.StartLineNumber)
+            }
+        }
     }
 }
 

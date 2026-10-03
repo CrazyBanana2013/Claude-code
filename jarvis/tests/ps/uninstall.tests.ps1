@@ -8,7 +8,7 @@ $programFiles = @('app/__init__.py', 'app/__main__.py', 'app/tools/registry.py',
     'Install.cmd', 'Uninstall.cmd', 'README.md', 'config.example.yaml', 'pyproject.toml')
 
 function New-Installed {
-    param([string[]]$Files = $programFiles, [switch]$WithUserData, [string[]]$ExtraManifestFiles = @())
+    param([string[]]$Files = $programFiles, [switch]$WithUserData, [string[]]$ExtraManifestFiles = @(), [string[]]$Preexisting = @())
     $t = New-TestDir 'inst'
     foreach ($f in $Files) { [void](Set-TestFile $t $f ('Inhalt ' + $f)) }
     [void](Set-TestFile $t '.venv/bin/python' '')
@@ -20,7 +20,7 @@ function New-Installed {
         [void](Set-TestFile $t 'config.yaml.bak' 'ALTE CONFIG')
         [void](Set-TestFile $t 'state/logs/server.log' 'log')
     }
-    $m = New-JarvisManifest -Version '0.1.0' -Source '/quelle' -Files (@($Files) + $ExtraManifestFiles) -Shortcuts @() -PythonEnv 'uv'
+    $m = New-JarvisManifest -Version '0.1.0' -Source '/quelle' -Files (@($Files) + $ExtraManifestFiles) -Shortcuts @() -PythonEnv 'uv' -Preexisting $Preexisting
     Write-JarvisManifest -Target $t -Manifest $m
     return $t
 }
@@ -140,6 +140,47 @@ Invoke-Test '-Purge loescht keine fremden Dateien' {
     Assert-Equal 'FREMD' (Get-TestFile $t 'eigene/config.yaml') 'config.yaml in Unterordner bleibt'
     Assert-Equal 'FREMD' (Get-TestFile $t 'myconfig.yaml') 'aehnlicher Name bleibt'
     foreach ($f in @('config.yaml', 'config.yaml.bak', 'secrets.yaml', 'state', '.jarvis-install.json')) { Assert-False (Test-TestPath $t $f) ('entfernt: ' + $f) }
+}
+
+Invoke-Test '-Purge laesst Einstellungen liegen, die schon vor der Installation da waren' {
+    $t = New-Installed -WithUserData -Preexisting @('config.yaml', 'state')
+    $r = Invoke-Uninstall @('-Target', $t, '-Yes', '-Purge')
+    Assert-Equal 0 $r.ExitCode ('Exitcode: ' + $r.Output)
+    Assert-Equal 'MEINE CONFIG' (Get-TestFile $t 'config.yaml') 'vorhandene config.yaml bleibt'
+    Assert-True (Test-TestPath $t 'state/logs/server.log') 'vorhandenes state bleibt'
+    Assert-False (Test-TestPath $t 'secrets.yaml') 'vom Installer angelegte secrets.yaml geloescht'
+    Assert-False (Test-TestPath $t 'config.yaml.bak') 'config.yaml.bak geloescht'
+    Assert-True ($r.Output -match 'lag schon vor der Installation hier') ('Hinweis: ' + $r.Output)
+    $rest = Read-JarvisManifest $t
+    Assert-True (Test-JarvisRemnantManifest $rest) 'Rest-Marker'
+    Assert-Equal @('config.yaml', 'state') @(Get-JarvisManifestList $rest 'preexisting') 'preexisting bleibt im Rest-Marker'
+    # Ein weiteres -Purge loescht sie ebenfalls nicht.
+    $r = Invoke-Uninstall @('-Target', $t, '-Yes', '-Purge')
+    Assert-Equal 0 $r.ExitCode ('zweites -Purge: ' + $r.Output)
+    Assert-Equal 'MEINE CONFIG' (Get-TestFile $t 'config.yaml') 'bleibt auch beim zweiten Mal'
+}
+
+Invoke-Test 'Programmordner als Link: dahinter wird nichts geloescht' {
+    $t = New-Installed
+    $outside = New-TestDir 'draussen'
+    [void](Set-TestFile $outside 'wake.html' 'MEINE VERSION')
+    [void](Set-TestFile $outside 'my-own.html' 'MEINS')
+    Remove-Item -LiteralPath (Join-Path $t 'launcher') -Recurse -Force
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $t 'launcher') -Target $outside)
+    $r = Invoke-Uninstall @('-Target', $t, '-Yes')
+    Assert-Equal 0 $r.ExitCode ('Exitcode: ' + $r.Output)
+    Assert-Equal 'MEINE VERSION' (Get-TestFile $outside 'wake.html') 'Datei hinter dem Link bleibt'
+    Assert-Equal 'MEINS' (Get-TestFile $outside 'my-own.html') 'eigene Datei hinter dem Link bleibt'
+    Assert-True ($r.Output -match 'hinter einem Ordner-Link') ('Hinweis: ' + $r.Output)
+    Assert-False (Test-TestPath $t 'app/__main__.py') 'normale Programmdateien entfernt'
+}
+
+Invoke-Test '-Target mit verschlucktem Anfuehrungszeichen: klare Meldung' {
+    $t = New-Installed
+    $r = Invoke-Uninstall @('-Target', ($t + '" -Purge'), '-Yes')
+    Assert-Equal 2 $r.ExitCode ('Exitcode: ' + $r.Output)
+    Assert-True ($r.Output -match 'endet vermutlich mit') ('Meldung: ' + $r.Output)
+    Assert-True (Test-TestPath $t 'app/__main__.py') 'nichts geloescht'
 }
 
 Invoke-Test 'Rueckfragen: Nein bricht ab, Purge-Standard ist Nein' {

@@ -1,6 +1,6 @@
 import pytest
 
-from app.config import ConfigError, config_warnings, is_todo, load_config, parse_config
+from app.config import PROJECT_DIR, ConfigError, config_warnings, is_todo, load_config, parse_config
 from tests.conftest import example_config_dict
 
 
@@ -81,3 +81,20 @@ def test_unknown_sensor_type_rejected():
                                             (["a", "TODO"], True), ("C:\\scripts", False), (["py", "a.py"], False)])
 def test_is_todo(value, expected):
     assert is_todo(value) is expected
+
+
+def test_ansi_encoded_config_has_clear_message(tmp_path):
+    """Im Editor als 'ANSI' (cp1252) gespeichert: Klartext statt UnicodeDecodeError."""
+    p = tmp_path / "config.yaml"
+    text = (PROJECT_DIR / "config.example.yaml").read_text(encoding="utf-8")
+    p.write_bytes(text.encode("cp1252", errors="replace"))
+    with pytest.raises(ConfigError) as exc:
+        load_config(p)
+    assert "nicht UTF-8-kodiert" in str(exc.value)
+
+
+def test_config_path_is_a_directory(tmp_path):
+    (tmp_path / "config.yaml").mkdir()
+    with pytest.raises(ConfigError) as exc:
+        load_config(tmp_path / "config.yaml")
+    assert "Ordner" in str(exc.value) or "nicht gelesen" in str(exc.value)

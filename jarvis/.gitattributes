@@ -1,3 +1,7 @@
+# Textdateien immer mit LF auschecken (auch unter Git fuer Windows mit core.autocrlf=true), damit
+# das Release-ZIP auf jedem Rechner gleich wird; Binaerdateien erkennt Git selbst.
+* text=auto eol=lf
 # Windows-Skripte immer mit CRLF auschecken (cmd.exe und Windows PowerShell 5.1 erwarten das).
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+*.bat text eol=crlf

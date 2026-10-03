@@ -89,6 +89,18 @@ def test_config_error_writes_no_pid(env, monkeypatch, tmp_path):
     assert not env.exists()
 
 
+def test_ansi_config_exits_2_without_traceback(env, monkeypatch, capsys):
+    """config.yaml als ANSI gespeichert: Klartext und Exitcode 2 wie bei anderen Config-Fehlern."""
+    config = env.parent.parent / "config.yaml"
+    config.write_bytes(config.read_text(encoding="utf-8").encode("cp1252", errors="replace"))
+    assert "–".encode("cp1252") in config.read_bytes()  # wirklich kein UTF-8 mehr
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("darf nicht starten"))
+    assert server_main.main() == 2
+    err = capsys.readouterr().err
+    assert "nicht UTF-8-kodiert" in err and "Traceback" not in err
+    assert not env.exists()
+
+
 def test_refuses_second_instance(env, monkeypatch, capsys):
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
@@ -98,7 +110,10 @@ def test_refuses_second_instance(env, monkeypatch, capsys):
         env.write_text(json.dumps(record))
         monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("zweite Instanz darf nicht starten"))
         assert server_main.main() == 1
-        assert "läuft bereits" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "läuft bereits" in err
+        # Hinweis mit absolutem Pfad (läuft auch aus einem beliebigen Arbeitsordner) und Startmenü-Weg.
+        assert str(PROJECT_DIR / "scripts" / "stop.ps1") in err and "Startmenü > JARVIS > JARVIS beenden" in err
         assert json.loads(env.read_text()) == record  # Datei der laufenden Instanz bleibt
     finally:
         other.kill()

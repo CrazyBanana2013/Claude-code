@@ -8,7 +8,9 @@ und uv im PATH, sonst wird der Test übersprungen. `uv sync` darf fehlende Paket
 
 Geprüft wird das Zusammenspiel aller drei Teile: build_installer.py (Vertrag 4), install.ps1/
 uninstall.ps1 (Vertrag 3), setup_wizard (Vertrag 1) und die PID-Datei von python -m app (Vertrag 2).
-Eine vorhandene config.yaml (mit freiem Port) muss dabei Byte für Byte erhalten bleiben.
+Eine vorhandene config.yaml (mit freiem Port) muss dabei Byte für Byte erhalten bleiben – sie lag vor
+der Installation im Ordner, also fragt der Installer, bevor er sie übernimmt, und auch -Purge löscht
+sie nie.
 """
 
 from __future__ import annotations
@@ -60,11 +62,12 @@ def _env(uv: str) -> dict[str, str]:
     return env
 
 
-def _run(pwsh: str, script: Path, args: list[str], env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess:
+def _run(pwsh: str, script: Path, args: list[str], env: dict[str, str], cwd: Path,
+         answers: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [pwsh, "-NoProfile", "-File", str(script), *args],
-        cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT,
+        cwd=cwd, env=env, input=answers, stdin=None if answers is not None else subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT,
     )
 
 
@@ -190,7 +193,14 @@ def test_install_update_uninstall_end_to_end(tmp_path: Path) -> None:
     seen_pids: set[int] = set()
 
     try:
+        # Mit -Yes wird eine fremde config.yaml ohne Marker nie still übernommen ...
         proc = _run(pwsh, package / "scripts" / "install.ps1", install_args, env, tmp_path)
+        assert proc.returncode == 1, _output(proc)
+        assert "nur Einstellungen ohne Installationsmarker" in _output(proc)
+        assert sorted(p.name for p in target.iterdir()) == ["config.yaml"], "nichts kopiert"
+        # ... interaktiv: "Diese Einstellungen übernehmen?" = j, "Konfiguration jetzt anpassen?" = n.
+        first_args = [a for a in install_args if a != "-Yes"]
+        proc = _run(pwsh, package / "scripts" / "install.ps1", first_args, env, tmp_path, answers="j\nn\n")
         out = _output(proc)
 
         # c) Installation prüfen.
@@ -206,6 +216,7 @@ def test_install_update_uninstall_end_to_end(tmp_path: Path) -> None:
         assert Path(manifest["source"]) == package
         assert manifest["shortcuts"] == [] and manifest["autostart"] is None
         assert manifest["python_env"] == "uv"
+        assert manifest["preexisting"] == ["config.yaml"], "vorhandene config.yaml gehört nicht dem Installer"
         assert (target / "config.yaml").read_bytes() == config_bytes, "vorhandene config.yaml verändert"
         assert not (target / "config.yaml.bak").exists()
         secrets = yaml.safe_load((target / "secrets.yaml").read_text(encoding="utf-8"))
@@ -259,12 +270,15 @@ def test_install_update_uninstall_end_to_end(tmp_path: Path) -> None:
         left = sorted(p.name for p in target.iterdir())
         assert set(left) <= {".jarvis-install.json", "config.yaml", "secrets.yaml", "state"}, left
 
-        # ... und später mit -Purge (aus dem entpackten Paket, die Installation hat keins mehr).
+        # ... und später mit -Purge (aus dem entpackten Paket, die Installation hat keins mehr): Was der
+        # Installer angelegt hat (secrets.yaml, state\\), ist weg; die vorher vorhandene config.yaml bleibt.
         proc = _run(pwsh, package / "scripts" / "uninstall.ps1",
                     ["-Target", str(target), "-Yes", "-Purge", "-AllowNonWindows"], env, tmp_path)
         out = _output(proc)
         assert proc.returncode == 0, out
-        assert not target.exists() or not any(target.iterdir()), sorted(p.name for p in target.iterdir())
+        assert "lag schon vor der Installation hier" in out, out
+        assert sorted(p.name for p in target.iterdir()) == [".jarvis-install.json", "config.yaml"]
+        assert (target / "config.yaml").read_bytes() == config_bytes
     finally:
         # f) Nie einen Server zurücklassen.
         _kill_leftovers(target, seen_pids)

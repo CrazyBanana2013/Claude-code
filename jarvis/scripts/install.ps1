@@ -193,7 +193,8 @@ try {
     $outsideProfile = -not (Test-JarvisPathUnder -Path $script:Target -Root (Get-JarvisHomeDir))
     if ($onWindows -and $outsideProfile) {
         Write-JarvisWarn ('Der Zielordner liegt ausserhalb deines Benutzerprofils. Dort koennen andere Konten des PCs ' +
-            'oft mitlesen und Dateien aendern - der Installer schraenkt die Rechte auf deinen Benutzer ein. ' +
+            'oft mitlesen und Dateien aendern - der Installer schraenkt die Rechte auf deinen Benutzer ein ' +
+            '(einen neu angelegten Ordner ganz, sonst wenigstens secrets.yaml). ' +
             'Empfohlen ist der Standardordner %LOCALAPPDATA%\JARVIS.')
     }
     $oldManifest = $null

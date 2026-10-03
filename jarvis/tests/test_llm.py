@@ -175,3 +175,16 @@ async def test_status_ollama_down(factory):
     async with client_for(app, token=token) as c:
         llm = (await c.get("/api/status")).json()["llm"]
     assert llm["reachable"] is False
+
+
+async def test_invalid_ollama_address_falls_back(factory):
+    """Von Hand eingetragene, ungültige llm.base_url: Regel-Parser statt Absturz."""
+    overrides = {**LLM, "llm": {"model": "m", "base_url": "http://127.0.0.256:11434"}}
+    body, posted = await chat(factory, "Licht an", overrides)
+    assert body["source"] == "fallback"
+    assert "Ungültige Ollama-Adresse" in body["llm_error"]
+    assert posted == [{"on": True, "v": True}]
+    app, token = factory(overrides)
+    async with client_for(app, token=token) as c:
+        r = await c.get("/api/status")
+    assert r.status_code == 200 and r.json()["llm"]["reachable"] is False

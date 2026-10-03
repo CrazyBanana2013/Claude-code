@@ -263,7 +263,8 @@ namespace JarvisInstaller {
             uint cchFilePath, uint dwFlags);
 
         private static string LongPath(string path) {
-            if (path.Length < 248 || path.StartsWith(@"\\?\")) { return path; }
+            if (path.Length < 248) { return path; }
+            if (path.StartsWith(@"\\?\")) { return path; }
             if (path.StartsWith(@"\\")) { return @"\\?\UNC\" + path.Substring(2); }
             return @"\\?\" + path;
         }
@@ -289,7 +290,8 @@ namespace JarvisInstaller {
                 if (n >= sb.Capacity) {
                     sb = new StringBuilder((int)n + 1);
                     n = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, 0);
-                    if (n == 0 || n >= sb.Capacity) { return null; }
+                    if (n == 0) { return null; }
+                    if (n >= sb.Capacity) { return null; }
                 }
                 string s = sb.ToString();
                 if (s.StartsWith(@"\\?\UNC\")) { return @"\\" + s.Substring(8); }
@@ -541,7 +543,15 @@ function Set-JarvisOwnerOnlyAcl {
     }
     # Direkt ueber .NET (schreibt nur die DACL); Set-Acl wuerde auch Besitzer/SACL anfassen wollen.
     if ($PSVersionTable.PSVersion.Major -ge 6) {
-        [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+        # PowerShell 7 (.NET): Erweiterungsmethode. Typ ueber -as, damit Windows PowerShell 5.1 (und die
+        # Kompatibilitaetspruefung) ihn nie aufloest.
+        $ext = 'System.IO.FileSystemAclExtensions' -as [type]
+        if (-not $ext) {
+            try { Add-Type -AssemblyName 'System.IO.FileSystem.AccessControl' -ErrorAction Stop } catch { $ext = $null }
+            $ext = 'System.IO.FileSystemAclExtensions' -as [type]
+        }
+        if (-not $ext) { return $false }
+        $ext::SetAccessControl($item, $acl)
     } else {
         $item.SetAccessControl($acl)
     }
@@ -1422,7 +1432,7 @@ function Initialize-JarvisPythonEnvironment {
             $cmd = Get-JarvisUvInstallCommand
             Write-JarvisInfo 'uv wurde nicht gefunden. uv richtet Python und alle Pakete fuer JARVIS ein'
             Write-JarvisInfo '(pro Benutzer nach %USERPROFILE%\.local\bin, ohne Adminrechte, PATH bleibt unveraendert;'
-            Write-JarvisInfo 'fehlt ein passendes Python, laedt uv es von GitHub nach %APPDATA%\uv\python).'
+            Write-JarvisInfo 'fehlt ein passendes Python, laedt uv es von GitHub in den Ordner %APPDATA%\uv).'
             Write-JarvisInfo ('Dazu wird der offizielle Installer von astral.sh geladen: ' + $cmd.Display)
             if ($python) {
                 Write-JarvisOk ('Python {0} gefunden: {1} - uv ist optional (ohne uv: python -m venv + pip).' -f $python.Version, $python.Path)

@@ -174,6 +174,10 @@ Invoke-Test 'Get-JarvisVersion liest [project].version' {
     $dir = New-TestDir 'v'
     [void](Set-TestFile $dir 'pyproject.toml' "[tool.x]`nversion = `"9.9.9`"`n[project]`nname = `"jarvis`"`nversion = `"1.2.3`"`n")
     Assert-Equal '1.2.3' (Get-JarvisVersion $dir) 'Version'
+    # Nur der Projektname reicht nicht (den tragen auch fremde Hobbyprojekte) ...
+    Assert-False (Test-JarvisLooksLikeJarvis $dir) 'nur pyproject.toml mit name = "jarvis"'
+    # ... erst mit den eigenen Installer-Dateien ist es eine JARVIS-Installation ohne Marker.
+    foreach ($rel in @('scripts/installer-lib.ps1', 'app/setup_wizard.py', 'config.example.yaml')) { [void](Set-TestFile $dir $rel) }
     Assert-True (Test-JarvisLooksLikeJarvis $dir) 'als JARVIS erkannt'
     $projectVersion = Get-JarvisVersion $script:JarvisRoot
     Assert-True ($projectVersion -match '^\d+\.\d+') ('Version des Projekts: ' + $projectVersion)
@@ -342,10 +346,13 @@ Invoke-Test 'Python-Umgebung: mit Zustimmung uv installieren und uv sync' {
     function Install-JarvisUv { $script:installed = $true; return 0 }
     function Read-JarvisAnswer { param($Prompt) return 'j' }
     function Invoke-JarvisUvSync { param($Uv, $Target) $script:syncs++; [void](Set-TestFile $t '.venv/bin/python' ''); return 0 }
-    function Find-JarvisPython { throw 'pip-Fallback sollte nicht noetig sein' }
+    $script:pyChecks = 0
+    # Vor der Frage wird nur nachgesehen, ob es ohne uv ginge (hier: kein Python) - kein pip-Fallback.
+    function Find-JarvisPython { $script:pyChecks++; return $null }
     Assert-Equal 'uv' (Initialize-JarvisPythonEnvironment -Target $t) 'Ergebnis'
     Assert-True $script:installed 'uv installiert'
     Assert-Equal 1 $script:syncs 'uv sync'
+    Assert-Equal 1 $script:pyChecks 'Python nur einmal vor der Frage gesucht'
 }
 
 Invoke-Test 'Python-Umgebung: uv sync scheitert -> pip; ohne Python klare Meldung' {
@@ -357,6 +364,61 @@ Invoke-Test 'Python-Umgebung: uv sync scheitert -> pip; ohne Python klare Meldun
     Assert-Throws { Initialize-JarvisPythonEnvironment -Target $t } '*Python 3.11*-InstallUv*'
     Remove-Item -LiteralPath (Join-Path $t 'requirements.txt')
     Assert-Throws { Initialize-JarvisPythonEnvironment -Target $t } '*requirements.txt fehlt*'
+}
+
+Invoke-Test 'Python-Umgebung: ohne uv und ohne Python -> sofort klare Anleitung' {
+    $t = New-TestDir 't'
+    [void](Set-TestFile $t 'requirements.txt' '')
+    $script:asked = @()
+    function Find-JarvisUv { return $null }
+    function Find-JarvisPython { return $null }
+    function Install-JarvisUv { throw 'Download ohne Zustimmung!' }
+    function Read-JarvisAnswer { param($Prompt) $script:asked += $Prompt; return '' }
+    function Invoke-JarvisProcess { throw 'darf ohne Python nichts starten' }
+    Assert-Throws { Initialize-JarvisPythonEnvironment -Target $t } '*Python 3.11*uv-Download zustimmen*Use admin privileges when installing py.exe*'
+    Assert-Equal 1 $script:asked.Count 'eine Frage (Standard Nein)'
+    Assert-Throws { Initialize-JarvisPythonEnvironment -Target $t -AssumeYes } '*Python 3.11*'
+    $msg = Get-JarvisNoPythonMessage
+    Assert-True ($msg -like '*Microsoft Store funktioniert hierfuer nicht*') 'kein Store-Python empfohlen'
+    Assert-True ($msg -like '*Python install manager*') 'Python install manager als Alternative'
+}
+
+Invoke-Test 'Python aus dem Microsoft Store wird nicht genommen' {
+    $store = 'C:\Users\Max\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe'
+    $storeBase = 'C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0'
+    Assert-True (Test-JarvisStorePythonPath $store) 'WindowsApps-Alias'
+    Assert-True (Test-JarvisStorePythonPath $storeBase) 'Paketordner (sys.base_prefix)'
+    Assert-True (Test-JarvisStorePythonPath 'C:\Users\Max\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\x') 'umgeleiteter LocalCache'
+    Assert-False (Test-JarvisStorePythonPath 'C:\Users\Max\AppData\Local\Programs\Python\Python312\python.exe') 'python.org nur fuer mich'
+    Assert-False (Test-JarvisStorePythonPath 'C:\Users\Max\AppData\Local\Python\pythoncore-3.14-64\python.exe') 'Python install manager'
+    Assert-False (Test-JarvisStorePythonPath '') 'leer'
+    # Find-JarvisPython entscheidet nach dem gemeldeten Pfad (der py-Launcher findet Store-Python ueber die Registry).
+    function Get-JarvisPythonCandidates {
+        return @([pscustomobject]@{ Exe = 'py'; Args = @('-3') }, [pscustomobject]@{ Exe = 'python'; Args = @() })
+    }
+    $script:pyOutput = @{
+        'py'     = @($store, $storeBase, '312')
+        'python' = @('C:\Users\Max\AppData\Local\Programs\Python\Python313\python.exe', 'C:\Users\Max\AppData\Local\Programs\Python\Python313', '313')
+    }
+    function Invoke-JarvisCapture { param($FilePath, $ArgumentList, $TimeoutSec) return [pscustomobject]@{ ExitCode = 0; Output = $script:pyOutput[$FilePath]; ErrorText = '' } }
+    $py = Find-JarvisPython
+    Assert-Equal 'C:\Users\Max\AppData\Local\Programs\Python\Python313\python.exe' $py.Path 'python.org-Python statt Store'
+    Assert-Equal '3.13' $py.Version 'Version'
+    $script:pyOutput['python'] = @('C:\x\python.exe', $storeBase, '313')
+    Assert-True ($null -eq (Find-JarvisPython)) 'nur Store-Python (auch als base_prefix) -> keins'
+}
+
+Invoke-Test 'pip-Fallback: fehlt .venv nach "python -m venv" -> klare Meldung statt pip-Fehler' {
+    $t = New-TestDir 't'
+    [void](Set-TestFile $t 'requirements.txt' 'fastapi==1 --hash=sha256:00')
+    $script:calls = @()
+    function Find-JarvisUv { return $null }
+    function Read-JarvisAnswer { param($Prompt) return 'n' }
+    function Find-JarvisPython { return [pscustomobject]@{ Path = '/opt/py311/bin/python3'; Version = '3.11' } }
+    # venv meldet Erfolg, die Dateien landen aber anderswo (wie bei der Umleitung des Store-Pythons).
+    function Invoke-JarvisProcess { param($FilePath, $ArgumentList, $WorkingDirectory, $Environment) $script:calls += , @($ArgumentList); return 0 }
+    Assert-Throws { Initialize-JarvisPythonEnvironment -Target $t } '*nicht angelegt*Microsoft Store*uv-Download*'
+    Assert-Equal 1 $script:calls.Count 'pip wird gar nicht erst gestartet'
 }
 
 Invoke-Test 'Find-JarvisPython findet ein Python >= 3.11' {
@@ -410,8 +472,10 @@ Invoke-Test 'Startmenue: vier Eintraege mit richtigen Zielen' {
     $url = [System.IO.File]::ReadAllText($created[0])
     Assert-True ($url -match "\[InternetShortcut\]\r\nURL=http://127\.0\.0\.1:8765/\r\n") ('.url-Inhalt: ' + $url)
     $start = $script:links[0]
-    Assert-True ($start.Target -like '*pythonw.exe') 'starten -> pythonw.exe'
-    Assert-Equal '-m app' $start.Args 'starten Argumente'
+    # "JARVIS starten" laeuft ueber start-hidden.ps1 (Rueckmeldung, Browser, Log-Zeilen bei Fehlern).
+    Assert-True ($start.Target -like '*powershell.exe') 'starten -> powershell.exe'
+    $startScript = Join-Path (Join-Path $t 'scripts') 'start-hidden.ps1'
+    Assert-Equal ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $startScript) $start.Args 'starten Argumente'
     Assert-Equal $t $start.Cwd 'starten Arbeitsordner'
     $stop = $script:links[1]
     Assert-True ($stop.Target -like '*powershell.exe') 'beenden -> powershell.exe'
@@ -595,20 +659,20 @@ Invoke-Test 'Fehlermeldungen ohne .NET-Huelle' {
 }
 
 Invoke-Test 'Private IPv4-Adressen' {
-    foreach ($ip in @('10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.178.20')) { Assert-True (Test-JarvisPrivateIPv4 $ip) $ip }
+    foreach ($ip in @('10.1.2.3', '172.16.0.1', '172.31.255.1', '192.168.0.20')) { Assert-True (Test-JarvisPrivateIPv4 $ip) $ip }
     foreach ($ip in @('8.8.8.8', '172.32.0.1', '100.64.0.1', '127.0.0.1', '169.254.1.1', 'fe80::1', 'kein')) { Assert-False (Test-JarvisPrivateIPv4 $ip) $ip }
     Assert-Equal 0 @(Get-JarvisLanAddresses).Count 'ohne Windows keine Adressliste'
     function Get-JarvisIPv4Interfaces {
         return @(
-            [pscustomobject]@{ Address = '192.168.178.20'; Interface = 'WLAN' },
+            [pscustomobject]@{ Address = '192.168.0.20'; Interface = 'WLAN' },
             [pscustomobject]@{ Address = '127.0.0.1'; Interface = 'Loopback' },
             [pscustomobject]@{ Address = '100.101.102.103'; Interface = 'Tailscale' },
             [pscustomobject]@{ Address = '10.0.0.5'; Interface = 'Ethernet' },
-            [pscustomobject]@{ Address = '192.168.178.20'; Interface = 'WLAN 2' },
+            [pscustomobject]@{ Address = '192.168.0.20'; Interface = 'WLAN 2' },
             [pscustomobject]@{ Address = '169.254.3.4'; Interface = 'APIPA' })
     }
     $lan = @(Get-JarvisLanAddresses)
-    Assert-Equal @('10.0.0.5', '192.168.178.20') @($lan | ForEach-Object { $_.Address }) 'nur private, ohne Doppelte'
+    Assert-Equal @('10.0.0.5', '192.168.0.20') @($lan | ForEach-Object { $_.Address }) 'nur private, ohne Doppelte'
     Assert-Equal @('Ethernet', 'WLAN') @($lan | ForEach-Object { $_.Interface }) 'Adapternamen'
     foreach ($ip in @('100.64.0.1', '100.127.255.254')) { Assert-True (Test-JarvisTailscaleIPv4 $ip) $ip }
     foreach ($ip in @('100.63.0.1', '100.128.0.1', '10.0.0.1', 'x')) { Assert-False (Test-JarvisTailscaleIPv4 $ip) $ip }
@@ -639,11 +703,270 @@ Invoke-Test 'Firewall-Befehle entsprechen README Abschnitt 5' {
     $end = $readme.IndexOf("`n## ", $start + 5)
     if ($end -lt 0) { $end = $readme.Length }
     $section = $readme.Substring($start, $end - $start) -replace "``\r?\n\s*", ' '
-    $fromReadme = @($section -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -like 'New-NetFirewallRule *' } |
+    $fromReadme = @($section -split "`r?`n" | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -like 'New-NetFirewallRule *' -or $_ -like 'Get-NetFirewallApplicationFilter *' } |
         ForEach-Object { $_ -replace '\s+', ' ' })
     $ours = @(Get-JarvisFirewallCommands -Port 8765 | ForEach-Object { $_ -replace '\s+', ' ' })
-    Assert-Equal $fromReadme $ours 'gleiche Regeln wie im README'
+    Assert-Equal $fromReadme $ours 'gleiche Befehle wie im README (zwei Freigaben + Aufraeumen der Block-Regeln)'
     Assert-True ((Get-JarvisFirewallCommands -Port 9000)[0] -like '*JARVIS 9000 (LAN)*-LocalPort 9000 *') 'Port wird eingesetzt'
+}
+
+Invoke-Test 'Firewall: Block-Regeln fuer das Python der venv aufraeumen (nur angezeigt)' {
+    $pyHome = "C:\Users\Max O'Brien\AppData\Roaming\uv\python\cpython-3.12.11-windows-x86_64-none"
+    $cmds = @(Get-JarvisFirewallCommands -Port 8765 -PythonHome $pyHome)
+    Assert-Equal 3 $cmds.Count 'drei Befehle'
+    $cleanup = $cmds[2]
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($cleanup, [ref]$tokens, [ref]$errors)
+    Assert-Equal 0 @($errors).Count ('gueltiger PowerShell-Befehl: ' + $cleanup)
+    Assert-True ($cleanup -like "*`$_.Direction -eq 'Inbound' -and `$_.Action -eq 'Block'*| Remove-NetFirewallRule") ('nur eingehende Block-Regeln: ' + $cleanup)
+    $like = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] -and $n.Operator -eq 'Ilike' }, $true))[0]
+    $pattern = $like.Right.Value
+    Assert-True (($pyHome + '\pythonw.exe') -like $pattern) ('pythonw.exe: ' + $pattern)
+    Assert-True (($pyHome.ToLowerInvariant() + '\python.exe') -like $pattern) 'python.exe, Gross-/Kleinschreibung egal'
+    Assert-False ('C:\Andere\python.exe' -like $pattern) 'fremdes Python bleibt'
+    $br = @(Get-JarvisFirewallCommands -PythonHome 'D:\Py [test]\')[2]
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($br, [ref]$tokens, [ref]$errors)
+    $pattern = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] -and $n.Operator -eq 'Ilike' }, $true))[0].Right.Value
+    Assert-True ('D:\Py [test]\python.exe' -like $pattern) ('[ ] im Pfad maskiert: ' + $pattern)
+}
+
+Invoke-Test 'Get-JarvisVenvHome liest home aus pyvenv.cfg' {
+    $t = New-TestDir 't'
+    Assert-True ($null -eq (Get-JarvisVenvHome -Target $t)) 'ohne pyvenv.cfg'
+    $uml = 'C:\Users\Max M' + [char]0x00FC + 'ller\AppData\Roaming\uv\python\cpython-3.12'
+    $path = Join-JarvisRelPath $t '.venv/pyvenv.cfg'
+    [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($path))
+    [System.IO.File]::WriteAllText($path, ("home = {0}`r`nimplementation = CPython`r`nversion_info = 3.12.11`r`n" -f $uml), (New-Object System.Text.UTF8Encoding($false)))
+    Assert-Equal $uml (Get-JarvisVenvHome -Target $t) 'home mit Umlaut'
+}
+
+# --- Links, OneDrive-Platzhalter, Ordner-Links im Ziel ------------------------------------------
+
+Invoke-Test 'Reparse-Tags: Links/Junctions ja, OneDrive-Platzhalter nein' {
+    Assert-True (Test-JarvisLinkTag ([long]2684354572)) 'IO_REPARSE_TAG_SYMLINK (0xA000000C)'
+    Assert-True (Test-JarvisLinkTag ([long]2684354563)) 'IO_REPARSE_TAG_MOUNT_POINT = Junction (0xA0000003)'
+    Assert-True (Test-JarvisLinkTag ([long]2147483675)) 'IO_REPARSE_TAG_APPEXECLINK (0x8000001B)'
+    Assert-True (Test-JarvisLinkTag $null) 'Tag nicht lesbar = Link (sichere Seite)'
+    # IO_REPARSE_TAG_CLOUD (0x9000001A), CLOUD_1 (0x9000101A), CLOUD_F (0x9000F01A), DEDUP (0x80000013)
+    foreach ($tag in @([long]2415919130, [long]2415923226, [long]2415980570, [long]2147483667)) {
+        Assert-False (Test-JarvisLinkTag $tag) ('kein Link: ' + $tag)
+    }
+    $placeholder = [pscustomobject]@{ Attributes = [System.IO.FileAttributes]'Directory, ReparsePoint'; FullName = 'C:\OneDrive\JARVIS-Setup' }
+    $plain = [pscustomobject]@{ Attributes = [System.IO.FileAttributes]'Directory'; FullName = 'C:\x' }
+    function Get-JarvisReparseTag { param($Path) return [long]2415919130 }
+    Assert-False (Test-JarvisLinkLike $placeholder) 'OneDrive-Ordner ist kein Link'
+    Assert-False (Test-JarvisLinkLike $plain) 'normaler Ordner'
+    function Get-JarvisReparseTag { param($Path) return [long]2684354563 }
+    Assert-True (Test-JarvisLinkLike $placeholder) 'Junction'
+    function Get-JarvisReparseTag { param($Path) return $null }
+    Assert-True (Test-JarvisLinkLike $placeholder) 'unbekannt'
+}
+
+Invoke-Test 'Programmdateien aus OneDrive (Platzhalter) werden kopiert, Links nicht' {
+    $src = New-TestDir 'src'
+    $cloud = New-TestDir 'cloud'
+    $outside = New-TestDir 'outside'
+    foreach ($rel in @('pyproject.toml', 'README.md')) { [void](Set-TestFile $src $rel) }
+    foreach ($rel in @('__main__.py', 'tools/led.py')) { [void](Set-TestFile $cloud $rel) }
+    [void](Set-TestFile $outside 'geheim.txt')
+    # Unter Linux tragen nur symbolische Links das Attribut ReparsePoint: "app" spielt einen
+    # OneDrive-Platzhalter-Ordner (Tag CLOUD), "linked" einen echten Link.
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $src 'app') -Target $cloud)
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $src 'linked') -Target $outside)
+    function Get-JarvisReparseTag {
+        param($Path)
+        if ([System.IO.Path]::GetFileName($Path) -eq 'app') { return [long]2415919130 }
+        return [long]2684354572
+    }
+    Assert-Equal @('README.md', 'app/__main__.py', 'app/tools/led.py', 'pyproject.toml') @(Get-JarvisProgramFiles -Source $src) 'Dateiliste'
+}
+
+Invoke-Test 'Pflichtdateien fehlen in der Dateiliste -> OneDrive-Hinweis vor dem Kopieren' {
+    Assert-Throws { Assert-JarvisProgramFileList -Files @('README.md', 'pyproject.toml') -Source 'C:\Users\Max\OneDrive\Desktop\JARVIS-Setup' } '*fehlen Programmdateien*app/__main__.py*OneDrive*C:\JARVIS-Setup*'
+    Assert-JarvisProgramFileList -Files @(Get-JarvisRequiredProgramFiles | ForEach-Object { $_.ToUpperInvariant() }) -Source 'x'
+    Assert-JarvisProgramFileList -Files @(Get-JarvisProgramFiles -Source $script:JarvisRoot) -Source $script:JarvisRoot
+}
+
+Invoke-Test 'Ordner-Link im Ziel: nie dahinter loeschen oder schreiben' {
+    $root = New-TestDir 'inst'
+    $outside = New-TestDir 'outside'
+    [void](Set-TestFile $outside 'wake.html' 'MEINE VERSION')
+    [void](Set-TestFile $outside 'my-own.html' 'MEINS')
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $root 'launcher') -Target $outside)
+    [void](Set-TestFile $root 'app/a.py')
+    Assert-True (Test-JarvisHasLinkAncestor -Root $root -Path (Join-Path $root 'launcher/wake.html')) 'Link erkannt'
+    Assert-False (Test-JarvisHasLinkAncestor -Root $root -Path (Join-Path $root 'app/a.py')) 'normaler Ordner'
+    $r = Remove-JarvisRelativeFiles -Target $root -Files @('launcher/wake.html', 'app/a.py')
+    Assert-Equal 'MEINE VERSION' (Get-TestFile $outside 'wake.html') 'Datei hinter dem Link bleibt'
+    Assert-True ($r.Skipped -contains 'launcher/wake.html') 'als uebersprungen gemeldet'
+    Assert-False (Test-TestPath $root 'app/a.py') 'normale Programmdatei entfernt'
+    $r = Remove-JarvisStaleFiles -Target $root -OldFiles @('launcher/wake.html', 'launcher/my-own.html') -NewFiles @()
+    Assert-Equal 'MEINS' (Get-TestFile $outside 'my-own.html') 'Update loescht nichts hinter dem Link'
+    $src = New-TestDir 'src'
+    [void](Set-TestFile $src 'launcher/wake.html' 'NEU')
+    Assert-Throws { Copy-JarvisProgramFiles -Source $src -Target $root -Files @('launcher/wake.html') } '*Ordner-Link*nie ausserhalb*'
+    Assert-Equal 'MEINE VERSION' (Get-TestFile $outside 'wake.html') 'nicht durch den Link ueberschrieben'
+    # Ein Datei-Link am Zielort wird ersetzt, nie durch ihn hindurch geschrieben.
+    $dst = New-TestDir 'dst'
+    $foreign = Set-TestFile $outside 'fremd.py' 'FREMD'
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $dst 'app'))
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $dst 'app/x.py') -Target $foreign)
+    [void](Set-TestFile $src 'app/x.py' 'NEU')
+    Assert-Equal 1 (Copy-JarvisProgramFiles -Source $src -Target $dst -Files @('app/x.py')) 'kopiert'
+    Assert-Equal 'FREMD' ([System.IO.File]::ReadAllText($foreign)) 'Ziel des Datei-Links unveraendert'
+    Assert-Equal 'NEU' (Get-TestFile $dst 'app/x.py') 'echte Datei am Zielort'
+    Assert-False (Test-JarvisReparsePoint (Join-Path $dst 'app/x.py')) 'kein Link mehr'
+}
+
+Invoke-Test 'Marker-Eintraege, die Windows auf geschuetzte Namen kuerzt, sind ungueltig' {
+    foreach ($bad in @('config.yaml ', 'secrets.yaml ', 'config.yaml.', 'state./scripts.json', 'state ./logs/server.log',
+            ' config.yaml', 'CONFIG~1.YAM', 'STATE~1/scripts.json', 'app/x.py.', 'app /x.py')) {
+        Assert-False (Test-JarvisRelPathValid $bad) ('ungueltig: [' + $bad + ']')
+    }
+    Assert-True (Test-JarvisProtectedRelPath 'config.yaml ') 'geschuetzt trotz Leerzeichen'
+    Assert-True (Test-JarvisProtectedRelPath 'state./x') 'geschuetzt trotz Punkt'
+    $root = New-TestDir 'inst'
+    [void](Set-TestFile $root 'config.yaml' 'MEINE CONFIG')
+    [void](Set-TestFile $root 'secrets.yaml' 'MEIN TOKEN')
+    [void](Set-TestFile $root 'state/scripts.json' 'MEIN STATUS')
+    $r = Remove-JarvisRelativeFiles -Target $root -Files @('config.yaml ', 'secrets.yaml ', 'state./scripts.json', 'CONFIG~1.YAM')
+    Assert-Equal 4 $r.Skipped.Count 'alle uebersprungen'
+    Assert-Equal 'MEINE CONFIG' (Get-TestFile $root 'config.yaml') 'config.yaml bleibt'
+    Assert-Equal 'MEIN TOKEN' (Get-TestFile $root 'secrets.yaml') 'secrets.yaml bleibt'
+    Assert-Equal 'MEIN STATUS' (Get-TestFile $root 'state/scripts.json') 'state bleibt'
+}
+
+Invoke-Test 'Zielordner ueber Link, Netzwerk- oder Geraetepfad auf geschuetzte Ordner wird abgelehnt' {
+    $fakeHome = New-TestDir 'fakehome'
+    $links = New-TestDir 'links'
+    $homeLink = Join-Path $links 'homelink'
+    $parentLink = Join-Path $links 'parentlink'
+    [void](New-Item -ItemType SymbolicLink -Path $homeLink -Target $fakeHome)
+    [void](New-Item -ItemType SymbolicLink -Path $parentLink -Target (Split-Path -Parent $fakeHome))
+    $oldHome = $env:HOME
+    $env:HOME = $fakeHome
+    try {
+        Assert-Throws { Assert-JarvisSafeTarget $fakeHome } '*geschuetzter Ordner*'
+        Assert-Throws { Assert-JarvisSafeTarget $homeLink } '*zeigt auf*geschuetzter Ordner*'
+        Assert-Throws { Assert-JarvisSafeTarget $parentLink } '*geschuetzter Ordner*'
+        Assert-Equal (Join-Path $fakeHome 'JARVIS') (Resolve-JarvisPhysicalPath (Join-Path $homeLink 'JARVIS')) 'Link aufgeloest, Rest angehaengt'
+        $ok = Join-Path $homeLink 'JARVIS'
+        Assert-Equal $ok (Assert-JarvisSafeTarget $ok) 'eigener Unterordner hinter dem Link ist erlaubt'
+    } finally {
+        $env:HOME = $oldHome
+    }
+    foreach ($bad in @('\\server\share\JARVIS', '\\?\C:\JARVIS', '\\.\C:\JARVIS', '//server/share/JARVIS')) {
+        Assert-Throws { Assert-JarvisSafeTarget $bad } '*Netzwerk- und Geraetepfade*'
+    }
+}
+
+Invoke-Test 'Marker wird atomar geschrieben (Zwischendatei, kein Rest)' {
+    $dir = New-TestDir 'm'
+    Write-JarvisManifest -Target $dir -Manifest (New-JarvisManifest -Version '1.0.0' -Source 's' -Files @('a.py'))
+    Write-JarvisManifest -Target $dir -Manifest (New-JarvisManifest -Version '2.0.0' -Source 's' -Files @('b.py'))
+    Assert-Equal '2.0.0' (Read-JarvisManifest $dir).version 'ersetzt'
+    Assert-False (Test-TestPath $dir (Get-JarvisMarkerTempName)) 'keine Zwischendatei'
+    # Rest einer abgebrochenen Schreibaktion stoert nicht, wird nie kopiert und nie als Programmdatei gefuehrt.
+    [void](Set-TestFile $dir (Get-JarvisMarkerTempName) '{halb')
+    Write-JarvisManifest -Target $dir -Manifest (New-JarvisManifest -Version '3.0.0' -Source 's')
+    Assert-Equal '3.0.0' (Read-JarvisManifest $dir).version 'trotz altem Rest'
+    Assert-False (Test-TestPath $dir (Get-JarvisMarkerTempName)) 'Rest aufgeraeumt'
+    Assert-True (Test-JarvisProtectedRelPath (Get-JarvisMarkerTempName)) 'geschuetzt'
+    Assert-True (Test-JarvisExcludedFile -Name (Get-JarvisMarkerTempName) -IsTop $true) 'nie kopiert'
+    $m = New-JarvisManifest -Version '1' -Source 's' -Preexisting @('config.yaml', 'state')
+    Write-JarvisManifest -Target $dir -Manifest $m
+    Assert-Equal @('config.yaml', 'state') @(Get-JarvisManifestList (Read-JarvisManifest $dir) 'preexisting') 'preexisting'
+    Write-JarvisManifest -Target $dir -Manifest (New-JarvisRemnantManifest (Read-JarvisManifest $dir))
+    $rest = Read-JarvisManifest $dir
+    Assert-True (Test-JarvisRemnantManifest $rest) 'Rest-Marker'
+    Assert-Equal @('config.yaml', 'state') @(Get-JarvisManifestList $rest 'preexisting') 'Rest-Marker behaelt preexisting'
+}
+
+Invoke-Test 'Fremde Eintraege im Zielordner' {
+    $d = New-TestDir 'ziel'
+    foreach ($rel in @('config.yaml', 'secrets.yaml', 'state/x', '.jarvis-install.json', 'README.md', 'app/__init__.py', '.venv/keep.txt')) { [void](Set-TestFile $d $rel) }
+    Assert-Equal @('.venv', 'app', 'README.md') @(Get-JarvisForeignEntries $d) 'nur fremde Namen'
+}
+
+Invoke-Test 'Entfernt-Zaehler zaehlt nur Dateien, Ordner getrennt' {
+    $root = New-TestDir 'inst'
+    foreach ($rel in @('app/a.py', 'app/sub/b.py', 'web/index.html')) { [void](Set-TestFile $root $rel) }
+    $r = Remove-JarvisRelativeFiles -Target $root -Files @('app/a.py', 'app/sub/b.py', 'web/index.html')
+    Assert-Equal 3 $r.Removed.Count 'drei Dateien'
+    Assert-Equal 3 $r.RemovedDirs.Count 'app/sub, app, web'
+    Assert-False (Test-TestPath $root 'app') 'Ordner weg'
+}
+
+# --- Serverstart ------------------------------------------------------------------------------
+
+Invoke-Test 'Serverstart (Windows): Arbeitsordner woertlich, ohne Fenster' {
+    $t = Join-Path (New-TestDir 'br') 'JARVIS [neu]'
+    [void](Set-TestFile $t '.venv/Scripts/python.exe' '')
+    function Test-JarvisWindows { return $true }
+    $psi = New-JarvisServerStartInfo -Target $t
+    Assert-Equal $t $psi.WorkingDirectory 'Arbeitsordner mit [ ] unveraendert'
+    Assert-Equal '-m app' $psi.Arguments 'Argumente'
+    Assert-True $psi.UseShellExecute 'ShellExecute (eigener Prozess, keine geerbten Handles)'
+    Assert-Equal 'Minimized' ([string]$psi.WindowStyle) 'python.exe minimiert'
+    [void](Set-TestFile $t '.venv/Scripts/pythonw.exe' '')
+    $psi = New-JarvisServerStartInfo -Target $t
+    Assert-True ($psi.FileName -like '*pythonw.exe') 'pythonw.exe'
+    Assert-Equal 'Hidden' ([string]$psi.WindowStyle) 'ohne Fenster'
+}
+
+Invoke-Test 'Serverstart (Testmodus): Ordner mit [ ] wird nicht als Platzhalter gelesen' {
+    $base = New-TestDir 'br'
+    $t = Join-Path $base 'JARVIS [neu]'
+    # Ein Ordner, auf den das Muster "JARVIS [neu]" passen wuerde (Start-Process -WorkingDirectory nahm ihn):
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $base 'JARVIS n'))
+    $py = Set-TestFile $t '.venv/bin/python' "#!/bin/sh`necho `"`$@`" > args.txt`npwd > cwd.txt`necho gestartet`necho fehlerkanal >&2`n"
+    & chmod +x $py
+    $proc = Start-JarvisServer -Target $t
+    Assert-True ($proc.WaitForExit(15000)) 'Prozess beendet'
+    Assert-Equal $t (Get-TestFile $t 'cwd.txt').Trim() 'richtiger Arbeitsordner'
+    Assert-Equal '-m app' (Get-TestFile $t 'args.txt').Trim() 'Argumente'
+    Assert-Equal 'gestartet' (Get-TestFile $t 'state/logs/server-stdout.log').Trim() 'stdout im Log'
+    Assert-Equal 'fehlerkanal' (Get-TestFile $t 'state/logs/server-stderr.log').Trim() 'stderr im Log'
+    Assert-False (Test-TestPath (Join-Path $base 'JARVIS n') 'cwd.txt') 'nicht im falschen Ordner gestartet'
+}
+
+Invoke-Test 'Startprobleme aus dem Log fuer Laien uebersetzen' {
+    $d = New-TestDir 'log'
+    $lines = @(1..20 | ForEach-Object { 'INFO: Zeile ' + $_ }) + "ERROR: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8765): address already in use"
+    $log = Set-TestFile $d 'server.log' (($lines -join "`n") + "`n")
+    $tail = @(Get-JarvisLogTail -Path $log -Lines 5)
+    Assert-Equal 5 $tail.Count 'fuenf Zeilen'
+    Assert-True ($tail[-1] -like '*Errno 98*') 'letzte Zeile'
+    Assert-Equal 0 @(Get-JarvisLogTail -Path (Join-Path $d 'fehlt.log')).Count 'fehlende Datei'
+    Assert-True ((Get-JarvisStartProblem -LogLines $tail -Port 8765) -like '*Port 8765 ist belegt*anderen Port*') 'Linux: Port belegt'
+    $win = "ERROR: [Errno 10048] error while attempting to bind on address ('0.0.0.0', 8765): only one usage of each socket address (protocol/network address/port) is normally permitted"
+    Assert-True ((Get-JarvisStartProblem -LogLines @($win) -Port 9000) -like '*Port 9000 ist belegt*') 'Windows: Port belegt'
+    Assert-True ((Get-JarvisStartProblem -LogLines @('JARVIS kann nicht starten:', 'config.yaml ist ungueltig') -Port 1) -like '*config.yaml*') 'Config-Fehler'
+    Assert-True ((Get-JarvisStartProblem -LogLines @(('JARVIS l' + [char]0x00E4 + 'uft bereits (PID 42, gestartet x).')) -Port 1) -like '*laeuft bereits*') 'zweite Instanz'
+    Assert-True ($null -eq (Get-JarvisStartProblem -LogLines @('irgendwas') -Port 1)) 'unbekannt -> nichts'
+}
+
+Invoke-Test 'Anderer laufender JARVIS-Server: Ordner wird genannt (nur lesen)' {
+    $t = New-TestDir 'target'
+    $other = 'C:\Users\Max\Repo\jarvis'
+    $now = [DateTime]::UtcNow
+    $script:procs = @(
+        [pscustomobject]@{ Id = 101; Name = 'pythonw.exe'; Path = 'C:\Python312\pythonw.exe'; CommandLine = '"C:\Python312\pythonw.exe" -m app'; ParentPath = ($other + '\.venv\Scripts\pythonw.exe'); StartTimeUtc = $now },
+        [pscustomobject]@{ Id = 102; Name = 'python'; Path = (Join-Path $t '.venv/bin/python'); CommandLine = ((Join-Path $t '.venv/bin/python') + ' -m app'); ParentPath = $null; StartTimeUtc = $now },
+        [pscustomobject]@{ Id = 103; Name = 'python'; Path = '/usr/bin/python3'; CommandLine = '/usr/bin/python3 -m pip list'; ParentPath = $null; StartTimeUtc = $now })
+    function Get-JarvisPythonProcessDetails { return $script:procs }
+    $found = @(Get-JarvisOtherServers -Target $t)
+    Assert-Equal 1 $found.Count 'nur der fremde Server (eigener und Nicht-Server ausgenommen)'
+    Assert-Equal 101 $found[0].Id 'PID'
+    Assert-Equal $other $found[0].Folder 'Ordner ueber dem .venv-Starter'
+}
+
+Invoke-Test 'Rechte einschraenken nur unter Windows' {
+    $d = New-TestDir 'acl'
+    Assert-False (Set-JarvisOwnerOnlyAcl -Path $d) 'ohne Windows nichts tun'
+    Assert-False (Set-JarvisOwnerOnlyAcl -Path (Join-Path $d 'fehlt')) 'fehlender Pfad'
 }
 
 Invoke-Test 'Sicherer Arbeitsordner liegt nie im Ziel' {

@@ -72,3 +72,18 @@ async def test_nan_and_404(factory):
 def test_legacy_object_id():
     assert legacy_object_id("BME280 Temperature") == "bme280_temperature"
     assert legacy_object_id("Zimmer-Temperatur (°C)") == "zimmer_temperatur_c"
+
+
+async def test_invalid_sensor_address_is_reported_per_sensor(factory):
+    factory.device_handler = handler
+    app, token = factory({"sensors": [
+        {"name": "Kaputt", "type": "esphome_rest", "base_url": "http://192.168.1.300", "entity_id": "x", "unit": ""},
+        {"name": "Temperatur", "type": "esphome_rest", "base_url": "http://esp.test",
+         "entity_id": "BME280 Temperature", "unit": "°C"},
+    ]})
+    async with client_for(app, token=token) as c:
+        r = await c.post("/api/tools/sensors_read")
+    assert r.status_code == 200, r.text
+    by_name = {s["name"]: s for s in r.json()["result"]["sensors"]}
+    assert "ungültige Adresse" in by_name["Kaputt"]["error"]
+    assert by_name["Temperatur"]["value"] == 21.4  # die anderen Sensoren laufen weiter

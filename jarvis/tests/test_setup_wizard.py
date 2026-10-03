@@ -190,6 +190,8 @@ def test_full_interactive_run(tmp_path):
     assert not (tmp_path / "config.yaml.bak").exists()
     paths = [(r.url.host, r.url.path) for r in net.requests]
     assert ("192.0.2.10", "/json/info") in paths
+    # Nach dem Speichern: Hinweis, dass Änderungen erst nach einem Neustart wirken.
+    assert out.index("Gespeichert:") < out.index("Damit Änderungen wirken: JARVIS neu starten")
 
 
 @pytest.mark.parametrize("skip", ["", "-"])
@@ -201,6 +203,11 @@ def test_skip_everything_keeps_todo(tmp_path, skip):
     assert read_config(tmp_path / "config.yaml") == example_dump()
     # Ollama nicht erreichbar → Hinweis auf Regel-Parser und ollama pull, kein Modell-Prompt
     assert "Regel-Parser" in scripted.text and "ollama pull" in scripted.text
+    assert "Install.cmd erneut starten" in scripted.text  # ausführbarer Weg statt "scripts\\pick_model.py"
+    # Nichts eingerichtet: '-' und Enter bedeuten dasselbe (bleibt TODO).
+    assert "Enter bzw. '-' = überspringen (bleibt TODO)." in scripted.text
+    assert "WLED bleibt nicht eingerichtet." in scripted.text
+    assert "jetzt nicht eingerichtet" not in scripted.text
     assert all(r.url.host == OLLAMA_HOST for r in net.requests)  # keine Geräteabfrage ohne Erlaubnis
 
 
@@ -349,6 +356,12 @@ def test_dash_resets_configured_values_to_todo(tmp_path):
     assert cs2["cwd"] == sw.TODO_CWD and cs2["command"] == sw.TODO_COMMAND
     assert cs2["label"] == "Mein CS2"
     assert cfg["llm"]["model"] == "qwen3:4b"
+    # Eingerichtete Werte: Der Hinweis sagt ehrlich, dass '-' zurücksetzt (nicht "überspringen").
+    out = scripted.text
+    assert out.count("Enter = unverändert lassen, '-' = auf TODO zurücksetzen") >= 2, out
+    assert "WLED ist jetzt nicht eingerichtet (TODO)." in out
+    assert "'Temperatur' ist jetzt nicht eingerichtet (TODO)." in out
+    assert "bleibt TODO" not in out
 
 
 def test_empty_sensor_and_script_lists_stay_empty_when_skipped(tmp_path):
@@ -562,6 +575,67 @@ def test_normalize_base_url_rejects(raw):
         sw.normalize_base_url(raw)
 
 
+@pytest.mark.parametrize("raw", ["192.168.1.300", "10.0.0.1000", "192.168.001.050", "999.1.1.1", "http://192.0.2.256:80"])
+def test_normalize_base_url_rejects_invalid_ipv4(raw):
+    """Tippfehler in der IP-Adresse: klare Meldung statt Absturz in httpx (InvalidURL)."""
+    with pytest.raises(ValueError, match="keine gültige IP-Adresse"):
+        sw.normalize_base_url(raw)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("fd00::5", "http://[fd00::5]"),
+    ("fe80::1", "http://[fe80::1]"),
+    ("2001:db8::1", "http://[2001:db8::1]"),
+])
+def test_normalize_base_url_bare_ipv6(raw, expected):
+    assert sw.normalize_base_url(raw) == expected
+
+
+@pytest.mark.parametrize("raw,match", [
+    ("http//192.0.2.1", "http://<adresse>"),
+    ("https//192.0.2.1", "http://<adresse>"),
+    ("http:/192.0.2.1", "http://<adresse>"),
+    ("http:\\\\192.0.2.1", "statt"),
+    ("fe80::1%eth0", "Zonen-ID"),
+])
+def test_normalize_base_url_rejects_scheme_typos(raw, match):
+    with pytest.raises(ValueError, match=match):
+        sw.normalize_base_url(raw)
+
+
+@pytest.mark.parametrize("url", ["http://192.168.1.300", "http://10.0.0.1000", "http://192.168.001.050"])
+def test_probe_with_invalid_address_does_not_crash(url):
+    """Von Hand eingetragene, ungültige Adresse (mit Enter übernommen): Ergebnis statt Ausnahme."""
+    with httpx.Client() as c:  # httpx prüft die URL schon vor jeder Verbindung
+        for result in (sw.probe_wled(c, url), sw.probe_esphome_device(c, url),
+                       sw.probe_esphome_sensor(c, url, "BME280 Temperature")):
+            assert not result.ok and not result.reachable
+            assert "Ungültige Adresse" in result.message
+
+
+def test_wizard_with_invalid_existing_wled_url_does_not_abort(tmp_path):
+    data = custom_existing()
+    data["wled"]["base_url"] = "http://192.168.1.300"
+    write_yaml(tmp_path / "config.yaml", data)
+    # Mit Gerätetest, überall Enter: Die WLED-Probe meldet "Ungültige Adresse" statt abzustürzen.
+    answers = ["j"] + [""] * 9
+    code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
+    assert code == 0, scripted.text
+    assert "Ungültige Adresse: http://192.168.1.300/json/info" in scripted.text
+    assert "Fehler:" not in scripted.text
+
+
+def test_connect_error_message_is_plain_german():
+    def handler(request):
+        raise httpx.ConnectError("weg", request=request)
+
+    with mock_client(handler) as c:
+        result = sw.probe_wled(c, "http://192.0.2.99")
+    assert not result.ok and not result.reachable
+    assert "ConnectError" not in result.message
+    assert "Gerät aus oder Adresse falsch" in result.message
+
+
 # --------------------------------------------------------------------------------------------
 # Ollama
 # --------------------------------------------------------------------------------------------
@@ -634,8 +708,8 @@ AHK_V2 = "C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe"
     ("C:\\S\\a.PS1", ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\S\\a.PS1"]),
     ("C:\\S\\a.ahk", [AHK_V2, "C:\\S\\a.ahk"]),
     ("C:\\S\\a.exe", ["C:\\S\\a.exe"]),
-    ("C:\\S\\a.bat", ["cmd.exe", "/c", "C:\\S\\a.bat"]),
-    ("C:\\S\\a.cmd", ["cmd.exe", "/c", "C:\\S\\a.cmd"]),
+    ("C:\\S\\a.bat", ["cmd.exe", "/d", "/c", "call", "C:\\S\\a.bat"]),
+    ("C:\\S\\a.cmd", ["cmd.exe", "/d", "/c", "call", "C:\\S\\a.cmd"]),
     ("C:\\S\\a.txt", None),
 ])
 def test_suggest_command(path, expected):
@@ -643,6 +717,24 @@ def test_suggest_command(path, expected):
                            env={"ProgramFiles": "C:\\Program Files"})
     assert s.cwd == "C:\\S"
     assert s.command == expected
+
+
+def test_suggest_bat_in_program_files_x86_keeps_quotes():
+    """cmd /c "C:\\Program Files (x86)\\...bat" würde die Anführungszeichen entfernen ("call" davor hilft)."""
+    path = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\CS2 Tools\\start.bat"
+    s = sw.suggest_command(path, which=lambda n: None, env={})
+    assert s.command == ["cmd.exe", "/d", "/c", "call", path]
+    line = subprocess.list2cmdline(s.command)  # so baut Popen unter Windows die Kommandozeile
+    rest = line.split(" /c ", 1)[1]
+    assert not rest.startswith('"'), line  # sonst greift die alte Anführungszeichen-Regel von cmd /c
+    assert f'"{path}"' in line
+    assert not s.notes, s.notes  # ( ) mit Leerzeichen im Pfad sind kein Problem mehr
+
+
+@pytest.mark.parametrize("path", ["C:\\S\\100%\\a.bat", "C:\\S\\a^b.cmd", "C:\\S\\a!.bat", "C:\\S\\a&b.bat"])
+def test_suggest_bat_warns_about_cmd_special_characters(path):
+    s = sw.suggest_command(path, which=lambda n: None, env={})
+    assert any("Sonderzeichen" in n for n in s.notes), (path, s.notes)
 
 
 def test_suggest_py_mentions_alternative_python():

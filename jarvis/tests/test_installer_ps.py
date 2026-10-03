@@ -90,7 +90,8 @@ def test_windows_scripts_are_pure_ascii(path: Path):
 def test_windows_scripts_found():
     rel = {str(p.relative_to(PROJECT_DIR)).replace("\\", "/") for p in _script_files(".ps1", ".cmd")}
     for name in ("Install.cmd", "Uninstall.cmd", "scripts/install.ps1", "scripts/uninstall.ps1",
-                 "scripts/installer-lib.ps1", "scripts/stop.ps1", "scripts/install_autostart.ps1"):
+                 "scripts/installer-lib.ps1", "scripts/stop.ps1", "scripts/install_autostart.ps1",
+                 "scripts/start-hidden.ps1"):
         assert name in rel, name
 
 
@@ -108,9 +109,11 @@ def test_no_ps7_pipeline_or_null_operators(path: Path):
 def test_gitattributes_forces_crlf():
     text = (PROJECT_DIR / ".gitattributes").read_text(encoding="utf-8")
     rules = {line.split()[0]: line.split()[1:] for line in text.splitlines() if line.strip() and not line.startswith("#")}
-    for pattern in ("*.ps1", "*.cmd"):
+    for pattern in ("*.ps1", "*.cmd", "*.bat"):
         assert pattern in rules, pattern
         assert "eol=crlf" in rules[pattern], rules[pattern]
+    # Alle anderen Textdateien mit LF: das Release-ZIP hängt nicht von core.autocrlf ab.
+    assert "eol=lf" in rules.get("*", []), rules
 
 
 def test_cmd_wrappers_call_powershell_correctly():
@@ -118,7 +121,16 @@ def test_cmd_wrappers_call_powershell_correctly():
     assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\\install.ps1" %*' in install
     uninstall = (PROJECT_DIR / "Uninstall.cmd").read_text(encoding="ascii")
     assert 'set "JARVIS_UNINSTALL_PS1=%~dp0scripts\\uninstall.ps1"' in uninstall
-    assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!JARVIS_UNINSTALL_PS1!" %*' in uninstall
+    assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!JARVIS_UNINSTALL_PS1!" !JARVIS_ARGS!' in uninstall
+    # Die Argumente werden gemerkt, solange DelayedExpansion noch aus ist: Sonst verschluckt cmd ein "!"
+    # in den Argumenten (z. B. in -Target "C:\\Users\\Max!\\...").
+    lines = [line.strip() for line in uninstall.splitlines()]
+    capture = lines.index("set JARVIS_ARGS=%*")
+    enable = next(i for i, line in enumerate(lines) if line.lower().startswith("setlocal enabledelayedexpansion"))
+    disable = next(i for i, line in enumerate(lines) if "disabledelayedexpansion" in line.lower())
+    assert disable < capture < enable, (disable, capture, enable)
+    assert not any("%*" in line for line in lines[enable:] if not line.lower().startswith("rem")), \
+        "nach EnableDelayedExpansion kein %* mehr"
     for text in (install, uninstall):
         assert text.lstrip().lower().startswith("@echo off")
         assert '"%JARVIS_NOPAUSE%"=="1"' in text or '"!JARVIS_NOPAUSE!"=="1"' in text
@@ -149,6 +161,27 @@ def test_installer_never_touches_system_settings():
             assert not stripped.startswith("New-NetFirewallRule"), f"{path.name}: {stripped}"
 
 
+def test_firewall_and_network_commands_are_only_displayed():
+    """Firewall-/Netzwerk-Befehle stehen nur als Text (zum Anzeigen) im Code, nie als Aufruf."""
+    commands = ("New-NetFirewallRule", "Remove-NetFirewallRule", "Set-NetFirewallRule", "Set-NetConnectionProfile",
+                "Get-NetFirewallApplicationFilter", "Disable-NetFirewallRule", "Enable-NetFirewallRule")
+    for path in _script_files(".ps1", ".cmd"):
+        if path.parent.name == "ps":
+            continue
+        for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith(("#", "rem ")):
+                continue
+            for name in commands:
+                pos = line.find(name)
+                while pos >= 0:
+                    before = line[:pos]
+                    # Innerhalb eines Strings: ungerade Zahl ' oder " davor.
+                    in_string = before.count("'") % 2 == 1 or before.count('"') % 2 == 1
+                    assert in_string, f"{path.name}:{number}: {name} wird aufgerufen: {stripped}"
+                    pos = line.find(name, pos + 1)
+
+
 def test_uv_download_only_with_documented_command():
     lib = (PROJECT_DIR / "scripts" / "installer-lib.ps1").read_text(encoding="ascii")
     assert 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"' in lib
@@ -157,3 +190,19 @@ def test_uv_download_only_with_documented_command():
     calls = [line for line in lib.splitlines() if "Install-JarvisUv" in line and not line.lstrip().startswith("#")]
     assert any(line.strip().startswith("function Install-JarvisUv") for line in calls)
     assert sum("= Install-JarvisUv" in line for line in calls) == 1
+
+
+def test_readme_toc_and_installer_section_references_match_headings():
+    """Inhaltsverzeichnis und die Hinweise des Installers ("README, Abschnitt 6 ...") passen zu den Überschriften."""
+    readme = (PROJECT_DIR / "README.md").read_text(encoding="utf-8")
+    headings = dict(re.findall(r"(?m)^## (\d+)\. (.+)$", readme))
+    toc = re.findall(r"(?m)^- \[(\d+)\. ([^\]]+)\]\(#[^)]+\)$", readme)
+    assert toc, "nummerierte Einträge im Inhaltsverzeichnis"
+    for number, title in toc:
+        assert number in headings, (number, title)
+        assert headings[number].split()[0].rstrip(".") in title or title.split()[0] in headings[number], (number, title)
+    install = (PROJECT_DIR / "scripts" / "install.ps1").read_text(encoding="ascii")
+    refs = re.findall(r'README, Abschnitt (\d+) "([^"]+)"', install)
+    assert refs, "Installer verweist auf README-Abschnitte"
+    for number, name in refs:
+        assert headings.get(number, "").startswith(name.split()[0]), (number, name, headings.get(number))

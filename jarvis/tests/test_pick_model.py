@@ -24,3 +24,24 @@ def test_smallest_tool_model_first():
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         found = pick_model.find_tool_models(client, "http://ollama.test")
     assert [n for _, n in found] == ["small", "big"]
+
+
+def test_invalid_url_gives_message_not_traceback(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["pick_model.py", "--url", "http://127.0.0.256:11434"])
+    assert pick_model.main() == 1
+    out = capsys.readouterr().out
+    assert "Ungültige Ollama-Adresse" in out
+
+
+def test_connection_refused_message_without_class_name():
+    def handler(request):
+        raise httpx.ConnectError("weg", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        try:
+            pick_model.find_tool_models(client, "http://ollama.test")
+        except pick_model.OllamaUnavailable as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("OllamaUnavailable erwartet")
+    assert "ConnectError" not in message and "Verbindung abgelehnt" in message

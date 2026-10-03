@@ -38,7 +38,7 @@ function Get-JarvisShortcutInfo {
 }
 function Get-JarvisPythonProcessDetails { return @() }
 function Get-JarvisIPv4Interfaces {
-    return @([pscustomobject]@{ Address = '192.168.178.20'; Interface = 'WLAN' },
+    return @([pscustomobject]@{ Address = '192.168.0.20'; Interface = 'WLAN' },
         [pscustomobject]@{ Address = '172.20.0.1'; Interface = 'vEthernet (WSL)' })
 }
 function Unblock-JarvisFiles {
@@ -85,7 +85,8 @@ Invoke-Test 'Installation (Windows simuliert): Startmenue, Autostart, Manifest' 
     Assert-Equal @($expected | Sort-Object) $names 'Startmenue-Eintraege'
     Assert-True ([System.IO.File]::ReadAllText((Join-Path $menu $expected[0])) -match 'URL=http://127\.0\.0\.1:8765/') '.url auf local_url'
     $start = Read-Link (Join-Path $menu 'JARVIS starten.lnk')
-    Assert-Equal '-m app' $start.Arguments 'starten: -m app'
+    Assert-True ($start.Arguments -like ('*-ExecutionPolicy Bypass -File "' + (Join-Path $t 'scripts') + '*start-hidden.ps1"')) ('starten: ' + $start.Arguments)
+    Assert-True (Test-TestPath $t 'scripts/start-hidden.ps1') 'start-hidden.ps1 installiert'
     Assert-Equal $t $start.WorkingDirectory 'starten: Arbeitsordner'
     $stop = Read-Link (Join-Path $menu 'JARVIS beenden.lnk')
     Assert-True ($stop.Arguments -like ('*-ExecutionPolicy Bypass -File "' + (Join-Path $t 'scripts') + '*stop.ps1" -Pause')) ('beenden: ' + $stop.Arguments)
@@ -96,8 +97,15 @@ Invoke-Test 'Installation (Windows simuliert): Startmenue, Autostart, Manifest' 
     $m = Read-JarvisManifest $t
     Assert-Equal @($names | ForEach-Object { Join-Path $menu $_ } | Sort-Object) @(Get-JarvisManifestList $m 'shortcuts' | Sort-Object) 'shortcuts im Manifest'
     Assert-Equal $autoLink $m.autostart 'autostart im Manifest'
-    Assert-True ($r.Output -match 'http://192\.168\.178\.20:8765/\s+\(Adapter "WLAN"') 'LAN-Adresse mit Adapter'
+    Assert-True ($r.Output -match 'http://192\.168\.0\.20:8765/\s+\(Adapter "WLAN"') 'LAN-Adresse mit Adapter'
     Assert-True ($r.Output -match 'Startmenue > JARVIS > JARVIS starten') 'Start-Hinweis aufs Startmenue'
+    # Firewall: dritter Befehl raeumt Block-Regeln fuer genau das Python der venv auf (aus pyvenv.cfg).
+    $pyHome = Get-JarvisVenvHome -Target $t
+    Assert-True ([bool]$pyHome) 'pyvenv.cfg hat home'
+    Assert-True ($r.Output.Contains("Get-NetFirewallApplicationFilter | Where-Object { `$_.Program -like '" + [System.Management.Automation.WildcardPattern]::Escape($pyHome.TrimEnd('/', '\')) + "\python*.exe' }")) ('Aufraeum-Befehl mit venv-Python: ' + $r.Output)
+    Assert-True ($r.Output -match 'Abbrechen') 'Hinweis auf den Firewall-Dialog'
+    Assert-True ($r.Output -match 'API-Token:\s+neu erzeugt') 'Token als neu gemeldet'
+    Assert-True ($r.Output -match 'Admin-PowerShell: Start > "PowerShell"') 'Weg zur Admin-PowerShell'
 }
 
 Invoke-Test 'Update mit -NoShortcuts -NoAutostart behaelt die bisherigen Eintraege' {
@@ -109,6 +117,13 @@ Invoke-Test 'Update mit -NoShortcuts -NoAutostart behaelt die bisherigen Eintrae
     Assert-True ([System.IO.File]::Exists($autoLink)) 'Autostart-Datei bleibt'
 }
 
+Invoke-Test 'Update: Token als unveraendert gemeldet' {
+    $r = Invoke-SimInstall @('-Yes')
+    Assert-Equal 0 $r.ExitCode ('Exitcode: ' + $r.Output)
+    Assert-True ($r.Output -match 'API-Token:\s+unveraendert') ('Zusammenfassung: ' + $r.Output)
+    Assert-False ($r.Output -match 'neu erzeugt') 'nicht als neu gemeldet'
+}
+
 Invoke-Test 'Update interaktiv: Autostart abgelehnt -> Eintrag entfernt' {
     # Antworten: Konfiguration anpassen? n / Autostart? n / Zwischenablage? n
     $r = Invoke-SimInstall @() -InputText "n`nn`nn`n"
@@ -118,7 +133,21 @@ Invoke-Test 'Update interaktiv: Autostart abgelehnt -> Eintrag entfernt' {
     Assert-True ($r.Output -match 'Zwischenablage kopieren\? \(j/N\)') 'Zwischenablage nur angeboten'
     Assert-False ([System.IO.File]::Exists($autoLink)) 'Autostart entfernt'
     Assert-True ($null -eq (Read-JarvisManifest $t).autostart) 'autostart im Manifest = null'
+    # Hinweis mit absolutem Pfad (laeuft aus jedem Arbeitsordner) statt "scripts\install_autostart.ps1".
+    Assert-True ($r.Output.Contains(('-File "{0}"' -f (Join-Path (Join-Path $t 'scripts') 'install_autostart.ps1')))) ('absoluter Pfad: ' + $r.Output)
     Assert-Equal 4 @(Get-JarvisManifestList (Read-JarvisManifest $t) 'shortcuts').Count 'Startmenue neu angelegt'
+}
+
+Invoke-Test 'Autostart einer anderen Installation: Hinweis vor der Umstellung' {
+    $other = New-TestDir 'alte-einrichtung'
+    $json = ConvertTo-JarvisJson ([ordered]@{ TargetPath = (Join-Path $other '.venv/bin/python'); Arguments = '-m app'; WorkingDirectory = $other; WindowStyle = 7 })
+    [System.IO.File]::WriteAllText($autoLink, $json)
+    # Antworten: Konfiguration anpassen? n / Autostart? j / Zwischenablage? n
+    $r = Invoke-SimInstall @() -InputText "n`nj`nn`n"
+    Assert-Equal 0 $r.ExitCode ('Exitcode: ' + $r.Output)
+    Assert-True ($r.Output -match 'startet JARVIS aus einem anderen Ordner') ('Hinweis: ' + $r.Output)
+    Assert-True ($r.Output.Contains($other)) 'alter Ordner genannt'
+    Assert-Equal (Join-Path $t '.venv/bin/python') (Read-Link $autoLink).TargetPath 'auf diese Installation umgestellt'
 }
 
 Invoke-Test 'Deinstallation: eigene Verknuepfungen weg, fremder Autostart bleibt' {

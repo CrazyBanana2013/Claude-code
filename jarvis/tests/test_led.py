@@ -142,3 +142,12 @@ async def test_unreachable(factory):
 def test_parse_color_error():
     with pytest.raises(ToolError):
         parse_color("")
+
+
+@pytest.mark.parametrize("base_url", ["http://192.168.1.300", "http://10.0.0.1000"])
+async def test_invalid_wled_address_is_a_clear_tool_error(factory, base_url):
+    """Von Hand eingetragene, ungültige IP: verständlicher Fehler statt HTTP 500 (httpx.InvalidURL)."""
+    r, posted = await call(factory, "led_power", {"state": "on"}, overrides={"wled": {"base_url": base_url}})
+    assert r.status_code == 400, r.text
+    assert "Ungültige WLED-Adresse" in r.json()["error"]
+    assert posted == []

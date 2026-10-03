@@ -161,6 +161,15 @@ def test_entry_attributes_are_fixed(src: Path, tmp_path: Path) -> None:
     "web/state/scripts.json",
     "app/tools/state/server.pid",
     "scripts/.jarvis-install.json",
+    # Kopien/Sicherungen der Benutzerdaten und typische Reste (oft mit echten Adressen oder Token):
+    "scripts/config.yaml.orig",
+    "app/config.yaml.bak2",
+    "scripts/secrets.yml.txt",
+    "web/.config.yaml.x1y2.tmp",
+    "launcher/settings.json.bak",
+    "web/notes.old",
+    "app/tools/led.py~",
+    "scripts/.jarvis-install.json.tmp",
 ])
 def test_forbidden_file_refused(src: Path, tmp_path: Path, rel: str, capsys: pytest.CaptureFixture[str]) -> None:
     write_tree(src, {rel: b"geheim\n"})
@@ -180,8 +189,29 @@ def test_token_in_file_refused(src: Path, tmp_path: Path, capsys: pytest.Capture
     assert not zip_path(out).exists()
 
 
+TOKEN_43 = b"EYdA3b7kLCkE9mpeI4fNVpH-Nee63J_jjbXZcJu5i_E"  # Form wie secrets.token_urlsafe(32), kein echter Token
+
+
+@pytest.mark.parametrize("content", [
+    b'{"api_token": "' + TOKEN_43 + b'"}\n',            # JSON (z. B. gespeicherte Einstellungen)
+    b"api_token = '" + TOKEN_43 + b"'\n",               # Python/INI mit '='
+    b"API_TOKEN: " + TOKEN_43 + b"\n",                   # andere Schreibweise
+    b'const t = {apiToken: "' + TOKEN_43 + b'"};\n',     # JavaScript
+    b"api-token=" + TOKEN_43 + b"\n",
+])
+def test_token_in_other_notations_refused(src: Path, tmp_path: Path, content: bytes,
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    write_tree(src, {"launcher/settings.json": content})
+    out = tmp_path / "out"
+    assert run_build(src, out) == 2
+    assert "launcher/settings.json" in capsys.readouterr().err
+    assert not zip_path(out).exists()
+
+
 def test_short_token_placeholder_allowed(src: Path, tmp_path: Path) -> None:
-    write_tree(src, {"app/doc.py": b"# api_token: <dein Token>\n# api_token: TODO\n"})
+    write_tree(src, {"app/doc.py": b"# api_token: <dein Token>\n# api_token: TODO\n"
+                                   b'yaml.safe_dump({"api_token": token})\n'
+                                   b'API_TOKEN = "TODO"\n'})
     assert run_build(src, tmp_path / "out") == 0
 
 
@@ -265,13 +295,32 @@ def test_crlf_for_windows_scripts(src: Path, tmp_path: Path) -> None:
     assert read(zp, "scripts/uninstall.ps1") == b"param()\r\nWrite-Host 'weg'"
 
 
-def test_other_files_unchanged(src: Path, tmp_path: Path) -> None:
+def test_other_text_files_get_lf(src: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     assert run_build(src, out) == 0
     zp = zip_path(out)
     for rel, data in FAKE_PACKAGED.items():
         if not rel.endswith((".ps1", ".cmd")):
-            assert read(zp, rel) == data, rel
+            assert read(zp, rel) == data.replace(b"\r\n", b"\n"), rel
+    assert read(zp, "app/setup_wizard.py") == b"# Wizard\nprint('crlf bleibt')\n"  # war CRLF im Checkout
+
+
+def test_binary_files_unchanged(src: Path, tmp_path: Path) -> None:
+    icon = b"\x89PNG\r\n\x1a\n\x00\x00\r\n"
+    write_tree(src, {"web/icon.png": icon})
+    out = tmp_path / "out"
+    assert run_build(src, out) == 0
+    assert read(zip_path(out), "web/icon.png") == icon
+
+
+def test_same_zip_from_lf_and_crlf_checkout(tmp_path: Path) -> None:
+    """Git für Windows checkt mit core.autocrlf=true CRLF aus – das ZIP muss trotzdem gleich sein."""
+    lf, crlf = tmp_path / "lf", tmp_path / "crlf"
+    write_tree(lf, {rel: data.replace(b"\r\n", b"\n") for rel, data in FAKE_PACKAGED.items()})
+    write_tree(crlf, {rel: data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") for rel, data in FAKE_PACKAGED.items()})
+    assert run_build(lf, tmp_path / "out-lf") == 0
+    assert run_build(crlf, tmp_path / "out-crlf") == 0
+    assert zip_path(tmp_path / "out-lf").read_bytes() == zip_path(tmp_path / "out-crlf").read_bytes()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -303,6 +352,17 @@ def test_source_date_epoch(src: Path, tmp_path: Path, monkeypatch: pytest.Monkey
     assert bi.zip_date_time() == (1980, 1, 1, 0, 0, 0)
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "gestern")
     assert run_build(src, tmp_path / "out2") == 2
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "4354819199")  # 2107-12-31 23:59:59 = letzter ZIP-Zeitpunkt
+    assert bi.zip_date_time()[0] == 2107
+
+
+@pytest.mark.parametrize("value", ["4354819200", "1790000000000", str(10**17), str(10**30)])
+def test_source_date_epoch_out_of_range(src: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                        capsys: pytest.CaptureFixture[str], value: str) -> None:
+    """Zu große Werte (z. B. Millisekunden) -> Meldung statt Stacktrace (OSError/OverflowError in gmtime)."""
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", value)
+    assert run_build(src, tmp_path / "out") == 2
+    assert "SOURCE_DATE_EPOCH" in capsys.readouterr().err
 
 
 def test_sha256_file_and_output(src: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -375,6 +435,8 @@ def test_real_tree(tmp_path: Path) -> None:
                 assert data.isascii(), rel
                 assert b"\r\r" not in data and data.count(b"\n") == data.count(b"\r\n"), rel
                 assert data.replace(b"\r\n", b"\n") == source.replace(b"\r\n", b"\n"), rel
+            elif rel.lower().endswith(bi.TEXT_SUFFIXES):
+                assert data == source.replace(b"\r\n", b"\n"), rel
             else:
                 assert data == source, rel
     assert (out / f"{top}.zip.sha256").read_text(encoding="ascii").split() == [
