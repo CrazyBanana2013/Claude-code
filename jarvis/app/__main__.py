@@ -154,9 +154,11 @@ def main() -> int:
     pid_path = pid_file_path()
     other = running_instance(pid_path)
     if other is not None:
+        stop_script = PROJECT_DIR / "scripts" / "stop.ps1"
         print(
             f"\nJARVIS läuft bereits (PID {other['pid']}, gestartet {other.get('started', '?')}).\n"
-            "Zum Beenden: powershell -ExecutionPolicy Bypass -File scripts\\stop.ps1\n",
+            "Zum Beenden: Startmenü > JARVIS > JARVIS beenden, oder\n"
+            f'  powershell -ExecutionPolicy Bypass -File "{stop_script}"\n',
             file=sys.stderr,
         )
         return 1

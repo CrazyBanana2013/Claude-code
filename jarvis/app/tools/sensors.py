@@ -48,6 +48,8 @@ async def read_esphome_rest(http: httpx.AsyncClient, cfg: SensorConfig) -> float
             raise SensorReadError(f"Timeout nach {SENSOR_TIMEOUT:g} s") from None
         except httpx.HTTPError as exc:
             raise SensorReadError(f"nicht erreichbar ({type(exc).__name__})") from None
+        except (httpx.InvalidURL, ValueError, UnicodeError):
+            raise SensorReadError(f"ungültige Adresse '{cfg.base_url}' – base_url in config.yaml prüfen") from None
         if resp.status_code != 404:
             break
     assert resp is not None

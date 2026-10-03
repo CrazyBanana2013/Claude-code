@@ -7,7 +7,7 @@
   Optionen:
     -Target <Ordner>  Installationsordner (Standard: %LOCALAPPDATA%\JARVIS; aus einer
                       bestehenden Installation gestartet: diese Installation)
-    -Yes              keine Rueckfragen, Standardantworten verwenden
+    -Yes              keine Rueckfragen, Standardantworten verwenden (laedt nie uv - dafuer -InstallUv)
     -NoAutostart      keinen Autostart-Eintrag anlegen
     -NoStart          Server am Ende nicht starten
     -NoShortcuts      keine Startmenue-Eintraege anlegen
@@ -17,8 +17,9 @@
     -AllowNonWindows  nur fuer Tests: unter pwsh auf Linux/macOS ausfuehren
 
   Ein Update ist dasselbe wie eine Installation: config.yaml, secrets.yaml und state\ im
-  Zielordner werden nie ueberschrieben oder geloescht.
-  Exitcodes: 0 = ok, 1 = vom Benutzer abgebrochen, 2 = Fehler.
+  Zielordner werden nie ueberschrieben oder geloescht. In einen fremden, nicht leeren Ordner
+  wird nicht installiert.
+  Exitcodes: 0 = ok, 1 = vom Benutzer abgebrochen (auch Strg+C), 2 = Fehler.
 #>
 param(
     [string]$Target,
@@ -43,20 +44,40 @@ $script:files = @()
 $script:shortcuts = @()
 $script:autostart = $null
 $script:pythonEnv = $null
+$script:preexisting = @()
+$script:completed = $false
 
 function Save-InstallManifest {
     $m = New-JarvisManifest -Version $script:version -Source $script:source -Files $script:files `
-        -Shortcuts $script:shortcuts -Autostart $script:autostart -PythonEnv $script:pythonEnv
+        -Shortcuts $script:shortcuts -Autostart $script:autostart -PythonEnv $script:pythonEnv -Preexisting $script:preexisting
     Write-JarvisManifest -Target $script:Target -Manifest $m
 }
 
+function Test-InstallerPreparedError {
+    # Vorbereitete Meldung (throw 'Text') statt eines unerwarteten Fehlers? Dann ohne "Stelle"-Zeile.
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+    return ($ex.GetType() -eq [System.Management.Automation.RuntimeException] -and
+        [string]$ErrorRecord.FullyQualifiedErrorId -eq [string]$ex.Message)
+}
+
 function Write-InstallSummary {
-    param([string]$LocalUrl, [int]$Port, [string]$Bind, [string[]]$Warnings, [bool]$Running)
+    param([string]$LocalUrl, [int]$Port, [string]$Bind, [string[]]$Warnings, [bool]$Running, [bool]$StartTried,
+        [bool]$OtherServer, [bool]$TokenCreated)
     $onWindows = Test-JarvisWindows
     Write-Host ''
-    Write-Host '================ JARVIS ist installiert ================' -ForegroundColor Green
+    if ($StartTried -and -not $Running -and -not $OtherServer) {
+        Write-Host '======= JARVIS ist installiert, aber nicht gestartet =======' -ForegroundColor Yellow
+    } else {
+        Write-Host '================ JARVIS ist installiert ================' -ForegroundColor Green
+    }
     Write-Host ('Ordner:            {0}' -f $script:Target)
-    Write-Host ('Oberflaeche am PC: {0}' -f $LocalUrl)
+    if ($OtherServer) {
+        Write-Host ('Achtung:           Unter {0} antwortet ein ANDERER Server (eigener Token, eigene config.yaml).' -f $LocalUrl) -ForegroundColor Yellow
+        Write-Host '                   Erst diesen beenden, dann Startmenue > JARVIS > JARVIS starten.' -ForegroundColor Yellow
+    } else {
+        Write-Host ('Oberflaeche am PC: {0}' -f $LocalUrl)
+    }
     if ($Bind -eq '0.0.0.0') {
         $lan = @(Get-JarvisLanAddresses)
         foreach ($a in $lan) {
@@ -69,17 +90,23 @@ function Write-InstallSummary {
         if ($tailscale) {
             Write-Host ('Ueber Tailscale:   http://{0}:{1}/   (Adresse fuer das Handy)' -f $tailscale, $Port)
         } else {
-            Write-Host 'Ueber Tailscale:   Tailscale nicht gefunden - siehe README Abschnitt 6.'
+            Write-Host 'Ueber Tailscale:   Tailscale nicht gefunden - siehe README, Abschnitt 6 "Tailscale".'
         }
     } else {
         Write-Host ('Hinweis: server.bind ist {0} - vom Handy nur erreichbar, wenn das passt.' -f $Bind)
     }
-    Write-Host ('Handy-Launcher:    {0}  (aufs Handy kopieren, README Abschnitt 8)' -f (Join-Path (Join-Path $script:Target 'launcher') 'wake.html'))
-    Write-Host ('API-Token:         steht in {0} (Eintrag api_token).' -f (Join-Path $script:Target 'secrets.yaml'))
-    Write-Host '                   Neu erzeugte Token werden oben einmalig angezeigt.'
-    Write-Host ('Einstellungen:     {0} - aendern mit Install.cmd (erneut) oder Notepad.' -f (Join-Path $script:Target 'config.yaml'))
+    Write-Host ('Handy-Launcher:    {0}  (aufs Handy kopieren, README, Abschnitt 8 "Handy-Launcher")' -f (Join-Path (Join-Path $script:Target 'launcher') 'wake.html'))
+    $secretsPath = Join-Path $script:Target 'secrets.yaml'
+    if ($TokenCreated) {
+        Write-Host ('API-Token:         neu erzeugt und oben in Schritt 6 angezeigt; steht auch in {0} (api_token).' -f $secretsPath)
+        Write-Host '                   Beim ersten Oeffnen der Oberflaeche (PC und Handy) eingeben.'
+    } else {
+        Write-Host ('API-Token:         unveraendert, steht in {0} (Eintrag api_token).' -f $secretsPath)
+    }
+    Write-Host ('Einstellungen:     {0} - aendern mit Install.cmd (erneut, "Konfiguration anpassen" = j) oder Notepad;' -f (Join-Path $script:Target 'config.yaml'))
+    Write-Host '                   nach Aenderungen per Notepad JARVIS neu starten (Startmenue: beenden, dann starten).'
     if ($onWindows) {
-        Write-Host ('Modell waehlen:    "{0}" scripts\pick_model.py' -f (Get-JarvisVenvPython -Target $script:Target))
+        Write-Host ('Modell waehlen:    "{0}" "{1}"' -f (Get-JarvisVenvPython -Target $script:Target), (Join-Path (Join-Path $script:Target 'scripts') 'pick_model.py'))
     }
     if (-not $Running) {
         if (@($script:shortcuts).Count -gt 0) {
@@ -95,12 +122,21 @@ function Write-InstallSummary {
         foreach ($w in $Warnings) { Write-Host ('  - ' + $w) -ForegroundColor Yellow }
     }
 
-    $commands = @(Get-JarvisFirewallCommands -Port $Port)
+    $commands = @(Get-JarvisFirewallCommands -Port $Port -PythonHome (Get-JarvisVenvHome -Target $script:Target))
     Write-Host ''
     Write-Host 'Firewall (einmalig, NUR in einer Admin-PowerShell - der Installer fuehrt das nicht aus):' -ForegroundColor Cyan
+    Write-Host '  Admin-PowerShell: Start > "PowerShell" tippen > Rechtsklick > "Als Administrator ausfuehren"'
+    Write-Host '  (als Standardbenutzer mit Name und Kennwort eines Administrators).'
     Write-Host '  Vorher pruefen: Get-NetConnectionProfile (Heimnetz = Private) und Get-NetAdapter'
     Write-Host '  (heisst der Tailscale-Adapter anders, -InterfaceAlias anpassen).'
     foreach ($c in $commands) { Write-Host ('  ' + $c) }
+    Write-Host '  Der letzte Befehl loescht Block-Regeln, die Windows fuer Python anlegt, wenn im Dialog'
+    Write-Host '  "Zugriff zulassen?" Abbrechen geklickt wurde (oder ohne Adminrechte) - sie gehen den'
+    Write-Host '  Freigaben vor. Nur ansehen: denselben Befehl ohne "| Remove-NetFirewallRule" ausfuehren.'
+    foreach ($n in @(Get-JarvisPublicNetworks)) {
+        Write-Host ('  Hinweis: Netzwerk {0} ist "Oeffentlich" - dort greift die LAN-Regel nicht. Heimnetz in der' -f $n) -ForegroundColor Yellow
+        Write-Host '  Admin-PowerShell auf Privat stellen: Set-NetConnectionProfile -InterfaceAlias "<Name>" -NetworkCategory Private' -ForegroundColor Yellow
+    }
     if ($onWindows -and -not $Yes) {
         if (Read-JarvisYesNo 'Firewall-Befehle in die Zwischenablage kopieren?' -Default $false) {
             try {
@@ -134,8 +170,14 @@ try {
     Write-JarvisStep 2 $TotalSteps 'Quell- und Zielordner'
     $script:source = Get-JarvisFullPath (Split-Path -Parent $PSScriptRoot)
     Assert-JarvisSourceFolder $script:source
-    # cmd.exe macht aus -Target "D:\JARVIS\" ein D:\JARVIS" (Backslash vor dem Anfuehrungszeichen).
+    # powershell.exe liest -Target "D:\JARVIS\" als D:\JARVIS" (\" = Anfuehrungszeichen im Wert). Steht
+    # -Target am Ende, genuegt Trim; sonst haengen die folgenden Optionen im Wert und sind verschluckt.
     if ($Target) { $Target = $Target.Trim().Trim('"') }
+    if ($Target -and $Target.Contains('"')) {
+        throw ('Der Pfad bei -Target endet vermutlich mit \" (Backslash vor dem Anfuehrungszeichen) - dadurch wurden ' +
+            'die folgenden Optionen verschluckt ({0}). Bitte -Target ohne abschliessenden Backslash angeben, z. B. ' +
+            '-Target "D:\JARVIS".') -f $Target
+    }
     if (-not $Target -and [System.IO.File]::Exists((Get-JarvisManifestPath $script:source))) {
         # Install.cmd aus einer bestehenden Installation: diese aktualisieren/neu einrichten.
         $Target = $script:source
@@ -148,29 +190,55 @@ try {
     }
     Write-JarvisInfo ('Quelle: ' + $script:source)
     Write-JarvisInfo ('Ziel:   ' + $script:Target)
+    $outsideProfile = -not (Test-JarvisPathUnder -Path $script:Target -Root (Get-JarvisHomeDir))
+    if ($onWindows -and $outsideProfile) {
+        Write-JarvisWarn ('Der Zielordner liegt ausserhalb deines Benutzerprofils. Dort koennen andere Konten des PCs ' +
+            'oft mitlesen und Dateien aendern - der Installer schraenkt die Rechte auf deinen Benutzer ein. ' +
+            'Empfohlen ist der Standardordner %LOCALAPPDATA%\JARVIS.')
+    }
     $oldManifest = $null
-    if ([System.IO.Directory]::Exists($script:Target)) {
+    $targetExisted = [System.IO.Directory]::Exists($script:Target)
+    if ($targetExisted) {
+        $markerBroken = $false
         try {
             $oldManifest = Read-JarvisManifest $script:Target
         } catch {
-            # Nur Hinweis: der Marker wird am Ende neu geschrieben (Dateien alter Versionen bleiben dann liegen).
-            Write-JarvisWarn ($_.Exception.Message + ' Er wird neu angelegt.')
+            Write-JarvisWarn $_.Exception.Message
+            $markerBroken = $true
             $oldManifest = $null
+        }
+        if ($inPlace -and ($null -eq $oldManifest -or (Test-JarvisRemnantManifest $oldManifest))) {
+            # Ohne gueltigen Marker ist unbekannt, welche Dateien hier zu JARVIS gehoeren - aus dem
+            # Ordnerinhalt eine Liste zu raten, wuerde eigene Dateien bei der Deinstallation mitloeschen.
+            throw ('Install.cmd wurde aus dem Installationsordner gestartet, aber der Installationsmarker fehlt oder ist ' +
+                'beschaedigt. Bitte das Installationspaket (ZIP) neu entpacken und dessen Install.cmd starten - ' +
+                'config.yaml, secrets.yaml und state\ bleiben dabei erhalten.')
         }
         if (Test-JarvisRemnantManifest $oldManifest) {
             # Rest-Marker einer Deinstallation ohne -Purge (nur noch config.yaml, secrets.yaml, state\).
             Write-JarvisInfo 'Einstellungen einer frueheren Installation gefunden - werden uebernommen.'
+            $script:preexisting = @(Get-JarvisManifestList $oldManifest 'preexisting')
         } elseif ($oldManifest) {
             Write-JarvisInfo ('Vorhandene Installation (Version {0}) wird aktualisiert.' -f $oldManifest.version)
-        } elseif ([System.IO.File]::Exists((Get-JarvisManifestPath $script:Target)) -or (Test-JarvisLooksLikeJarvis $script:Target)) {
-            Write-JarvisInfo 'Vorhandene JARVIS-Dateien ohne gueltigen Installationsmarker - werden aktualisiert.'
+            $script:preexisting = @(Get-JarvisManifestList $oldManifest 'preexisting')
+        } elseif ($markerBroken -or (Test-JarvisLooksLikeJarvis $script:Target)) {
+            Write-JarvisInfo 'Vorhandene JARVIS-Dateien ohne gueltigen Installationsmarker - werden aktualisiert, der Marker neu angelegt.'
         } elseif (Test-JarvisOnlyUserData $script:Target) {
-            Write-JarvisInfo 'Einstellungen einer frueheren Installation gefunden - werden uebernommen.'
-        } elseif (-not $inPlace -and (Test-JarvisDirNonEmpty $script:Target)) {
-            Write-JarvisWarn 'Der Zielordner ist nicht leer und enthaelt keine JARVIS-Installation.'
-            if (-not (Read-JarvisYesNo 'Trotzdem dort installieren? Fremde Dateien bleiben unangetastet.' -Default $false -AssumeDefault:$Yes)) {
-                Stop-JarvisAbort 'Installation abgebrochen - bitte einen leeren Ordner mit -Target angeben.'
+            $found = @(Get-JarvisUserDataEntries $script:Target)
+            Write-JarvisWarn ('Im Zielordner liegen nur Einstellungen ohne Installationsmarker: {0}.' -f ($found -join ', '))
+            Write-JarvisInfo 'Sie werden als JARVIS-Einstellungen genutzt, aber nie geloescht (auch nicht mit -Purge).'
+            if (-not (Read-JarvisYesNo 'Diese Einstellungen fuer JARVIS uebernehmen?' -Default $false -AssumeDefault:$Yes)) {
+                Stop-JarvisAbort 'Installation abgebrochen - bitte einen leeren Ordner mit -Target angeben (oder ohne -Yes starten und zustimmen).'
             }
+            $script:preexisting = $found
+        } elseif (Test-JarvisDirNonEmpty $script:Target) {
+            $foreign = @(Get-JarvisForeignEntries $script:Target)
+            $shown = @($foreign | Select-Object -First 8)
+            $more = ''
+            if ($foreign.Count -gt $shown.Count) { $more = (' und {0} weitere' -f ($foreign.Count - $shown.Count)) }
+            throw (('Der Zielordner {0} ist nicht leer und enthaelt keine JARVIS-Installation ({1}{2}). Gleichnamige ' +
+                    'Dateien wuerden ueberschrieben - deshalb wird dort nicht installiert. Bitte einen leeren oder ' +
+                    'neuen Ordner mit -Target angeben, z. B. -Target "{0}\JARVIS".') -f $script:Target, ($shown -join ', '), $more)
         }
         Write-JarvisInfo 'config.yaml, secrets.yaml und state\ bleiben erhalten.'
         if ((Stop-JarvisServer -Target $script:Target) -gt 0) { Write-JarvisOk 'Laufender JARVIS-Server wurde beendet.' }
@@ -184,15 +252,23 @@ try {
     # 3 ----------------------------------------------------------------------------------
     Write-JarvisStep 3 $TotalSteps 'Programmdateien kopieren'
     $script:files = @(Get-JarvisProgramFiles -Source $script:source)
+    Assert-JarvisProgramFileList -Files $script:files -Source $script:source
     if ($inPlace) {
         Write-JarvisInfo 'Quelle = Ziel: Aktualisierung an Ort und Stelle, es wird nichts kopiert.'
-        if ($oldManifest) {
-            # Nur die frueher installierten Dateien zaehlen - eigene Dateien im Ordner nie ins Manifest.
-            $known = @(Get-JarvisManifestList $oldManifest 'files')
-            $script:files = @($script:files | Where-Object { $known -contains $_ })
-        }
+        # Nur die frueher installierten Dateien zaehlen - eigene Dateien im Ordner nie ins Manifest.
+        $known = @(Get-JarvisManifestList $oldManifest 'files')
+        $script:files = @($script:files | Where-Object { $known -contains $_ })
     } else {
-        if (-not [System.IO.Directory]::Exists($script:Target)) { [void][System.IO.Directory]::CreateDirectory($script:Target) }
+        if (-not [System.IO.Directory]::Exists($script:Target)) {
+            [void][System.IO.Directory]::CreateDirectory($script:Target)
+            if ($onWindows -and $outsideProfile) {
+                try {
+                    if (Set-JarvisOwnerOnlyAcl -Path $script:Target) { Write-JarvisOk 'Zugriff auf den Zielordner nur fuer dich (plus SYSTEM/Administratoren).' }
+                } catch {
+                    Write-JarvisWarn ('Rechte des Zielordners konnten nicht eingeschraenkt werden: ' + (Get-JarvisErrorMessage $_))
+                }
+            }
+        }
         $count = Copy-JarvisProgramFiles -Source $script:source -Target $script:Target -Files $script:files
         Unblock-JarvisFiles -Target $script:Target -Files $script:files
         if ($oldManifest) {
@@ -220,8 +296,25 @@ try {
     # 5 ----------------------------------------------------------------------------------
     Write-JarvisStep 5 $TotalSteps 'Konfiguration (config.yaml)'
     $configPath = Join-Path $script:Target 'config.yaml'
+    $secretsPath = Join-Path $script:Target 'secrets.yaml'
     $examplePath = Join-Path $script:Target 'config.example.yaml'
     $wizardArgs = @('--config', $configPath, '--example', $examplePath)
+    if (-not $inPlace -and -not [System.IO.File]::Exists($configPath) -and -not [System.IO.File]::Exists($secretsPath)) {
+        # Umstieg von der manuellen Einrichtung: config.yaml/secrets.yaml liegen im Quellordner (Repo).
+        $migrate = @(@('config.yaml', 'secrets.yaml') | Where-Object { [System.IO.File]::Exists((Join-Path $script:source $_)) })
+        if ($migrate.Count -gt 0) {
+            Write-JarvisInfo ('Im Quellordner liegen eigene Einstellungen ({0}) - z. B. von der manuellen Einrichtung.' -f ($migrate -join ', '))
+            if ($Yes) {
+                Write-JarvisInfo 'Mit -Yes werden sie nicht uebernommen (dazu Install.cmd ohne -Yes starten).'
+            } elseif (Read-JarvisYesNo ('Vorhandene Einstellungen aus {0} uebernehmen?' -f $script:source) -Default $true) {
+                foreach ($name in $migrate) {
+                    # Nie ueberschreiben (die Zieldateien gibt es hier ohnehin noch nicht).
+                    [System.IO.File]::Copy((Join-Path $script:source $name), (Join-Path $script:Target $name), $false)
+                    Write-JarvisOk ('Uebernommen: ' + $name)
+                }
+            }
+        }
+    }
     if (-not [System.IO.File]::Exists($configPath)) {
         if ($Yes) {
             Write-JarvisInfo 'Lege config.yaml aus der Vorlage an (TODO-Werte spaeter ausfuellen).'
@@ -260,8 +353,16 @@ try {
 
     # 6 ----------------------------------------------------------------------------------
     Write-JarvisStep 6 $TotalSteps 'API-Token (secrets.yaml)'
-    $rc = Invoke-JarvisWizard -Python $python -Target $script:Target -Subcommand 'token' -Arguments @('--secrets', (Join-Path $script:Target 'secrets.yaml'))
+    $tokenCreated = -not [System.IO.File]::Exists($secretsPath)
+    $rc = Invoke-JarvisWizard -Python $python -Target $script:Target -Subcommand 'token' -Arguments @('--secrets', $secretsPath)
     if ($rc -ne 0) { throw ('Der API-Token konnte nicht angelegt werden (Exitcode {0}).' -f $rc) }
+    $tokenCreated = $tokenCreated -and [System.IO.File]::Exists($secretsPath)
+    if ($onWindows -and $outsideProfile -and $targetExisted -and [System.IO.File]::Exists($secretsPath)) {
+        # Vorhandener Ordner ausserhalb des Profils: wenigstens den Token nur fuer dich lesbar machen.
+        try { [void](Set-JarvisOwnerOnlyAcl -Path $secretsPath) } catch {
+            Write-JarvisWarn ('Rechte von secrets.yaml konnten nicht eingeschraenkt werden: ' + (Get-JarvisErrorMessage $_))
+        }
+    }
     $port = 8765
     $bind = '0.0.0.0'
     $localUrl = 'http://127.0.0.1:8765/'
@@ -296,21 +397,31 @@ try {
 
     # 8 ----------------------------------------------------------------------------------
     Write-JarvisStep 8 $TotalSteps 'Autostart'
+    $autostartScript = Join-Path (Join-Path $script:Target 'scripts') 'install_autostart.ps1'
     if ($NoAutostart) {
         Write-JarvisInfo 'Uebersprungen (-NoAutostart).'
     } elseif (-not $onWindows) {
         Write-JarvisInfo 'Uebersprungen (kein Windows).'
-    } elseif (Read-JarvisYesNo 'JARVIS bei jeder Anmeldung automatisch (ohne Fenster) starten?' -Default $true -AssumeDefault:$Yes) {
-        $auto = New-JarvisAutostart -Target $script:Target
-        $script:autostart = $auto.Path
-        if ($auto.Fallback) { Write-JarvisWarn 'pythonw.exe fehlt - Autostart nutzt python.exe (minimiertes Fenster).' }
-        Write-JarvisOk ('Autostart eingerichtet: ' + $auto.Path)
     } else {
-        if ($script:autostart -and ((Remove-JarvisAutostart -Path $script:autostart -Owner $script:Target) -eq 'removed')) {
-            Write-JarvisInfo 'Bisherigen Autostart-Eintrag entfernt.'
+        $existingLink = Get-JarvisAutostartPath
+        if ([System.IO.File]::Exists($existingLink) -and -not (Test-JarvisShortcutOwnedBy -Path $existingLink -Target $script:Target)) {
+            $otherTarget = Get-JarvisShortcutTargetPath $existingLink
+            Write-JarvisInfo ('Der bisherige Autostart-Eintrag startet JARVIS aus einem anderen Ordner ({0}).' -f $otherTarget)
+            Write-JarvisInfo 'Mit "Ja" wird er auf diese Installation umgestellt.'
         }
-        $script:autostart = $null
-        Write-JarvisInfo 'Kein Autostart. Spaeter: powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1'
+        if (Read-JarvisYesNo 'JARVIS bei jeder Anmeldung automatisch (ohne Fenster) starten?' -Default $true -AssumeDefault:$Yes) {
+            $auto = New-JarvisAutostart -Target $script:Target
+            $script:autostart = $auto.Path
+            if ($auto.Fallback) { Write-JarvisWarn 'pythonw.exe fehlt - Autostart nutzt python.exe (minimiertes Fenster).' }
+            Write-JarvisOk ('Autostart eingerichtet: ' + $auto.Path)
+        } else {
+            if ($script:autostart -and ((Remove-JarvisAutostart -Path $script:autostart -Owner $script:Target) -eq 'removed')) {
+                Write-JarvisInfo 'Bisherigen Autostart-Eintrag entfernt.'
+            }
+            $script:autostart = $null
+            Write-JarvisInfo 'Kein Autostart. Spaeter: Install.cmd erneut starten (fragt wieder), oder:'
+            Write-JarvisInfo ('  powershell -ExecutionPolicy Bypass -File "{0}"' -f $autostartScript)
+        }
     }
     Save-InstallManifest
 
@@ -318,18 +429,38 @@ try {
     Write-JarvisStep 9 $TotalSteps 'JARVIS starten'
     $healthUrl = $localUrl + 'api/health'
     $running = $false
+    $startTried = $false
+    $otherServer = $false
     if ($NoStart) {
         Write-JarvisInfo 'Uebersprungen (-NoStart).'
     } elseif (Test-JarvisHealth -Url $healthUrl) {
-        Write-JarvisWarn ('Auf Port {0} antwortet schon ein Server (evtl. eine andere JARVIS-Installation). Es wird kein zweiter gestartet.' -f $port)
+        $otherServer = $true
+        Write-JarvisWarn ('Auf Port {0} antwortet schon ein anderer Server (evtl. eine andere JARVIS-Installation). Es wird kein zweiter gestartet.' -f $port)
+        foreach ($o in @(Get-JarvisOtherServers -Target $script:Target)) {
+            Write-JarvisInfo ('Laeuft vermutlich aus: {0} (PID {1}) - dort beenden (z. B. scripts\stop.ps1 in diesem Ordner).' -f $o.Folder, $o.Id)
+        }
     } else {
+        if ($onWindows -and $bind -notmatch '^(127\.|localhost$|::1$)') {
+            Write-JarvisInfo 'Gleich kann Windows fragen, ob "Python" Netzwerkzugriff bekommt ("Zugriff zulassen?").'
+            Write-JarvisInfo 'Ohne Adminrechte ist "Abbrechen" in Ordnung - dann aber in der Admin-PowerShell auch den'
+            Write-JarvisInfo 'Aufraeum-Befehl fuer Block-Regeln ausfuehren (steht unten bei den Firewall-Befehlen).'
+        }
+        $startTried = $true
         $proc = Start-JarvisServer -Target $script:Target
         Write-JarvisInfo 'Warte auf den Server (bis zu 20 Sekunden) ...'
         $running = Wait-JarvisHealth -Url $healthUrl -TimeoutSec 20 -Process $proc
         if ($running) {
             Write-JarvisOk ('JARVIS laeuft: ' + $localUrl)
         } else {
-            Write-JarvisWarn ('JARVIS antwortet nicht. Details im Log: ' + (Get-JarvisServerLogHint -Target $script:Target))
+            $logPath = Get-JarvisServerLogHint -Target $script:Target
+            Write-JarvisWarn ('JARVIS antwortet nicht. Log: ' + $logPath)
+            $tail = @(Get-JarvisLogTail -Path $logPath -Lines 8)
+            if ($tail.Count -gt 0) {
+                Write-JarvisInfo 'Letzte Zeilen im Log:'
+                foreach ($line in $tail) { Write-JarvisInfo ('  ' + $line) }
+            }
+            $problem = Get-JarvisStartProblem -LogLines $tail -Port $port
+            if ($problem) { Write-JarvisWarn $problem }
         }
     }
 
@@ -337,19 +468,30 @@ try {
     Write-JarvisStep 10 $TotalSteps 'Abschluss'
     Save-InstallManifest
     Write-JarvisOk ('Installationsmarker geschrieben: ' + (Get-JarvisManifestPath $script:Target))
-    Write-InstallSummary -LocalUrl $localUrl -Port $port -Bind $bind -Warnings $warnings -Running $running
+    Write-InstallSummary -LocalUrl $localUrl -Port $port -Bind $bind -Warnings $warnings -Running $running `
+        -StartTried $startTried -OtherServer $otherServer -TokenCreated $tokenCreated
+    $script:completed = $true
 } catch [System.OperationCanceledException] {
     Write-Host ''
     Write-JarvisWarn $_.Exception.Message
     $exitCode = 1
+    $script:completed = $true
 } catch {
     Write-Host ''
     Write-JarvisErr (Get-JarvisErrorMessage $_)
-    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
+    if (-not (Test-InstallerPreparedError $_) -and $_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
         Write-Host ('       (Stelle: {0}, Zeile {1})' -f (Split-Path -Leaf $_.InvocationInfo.ScriptName), $_.InvocationInfo.ScriptLineNumber) -ForegroundColor DarkGray
     }
     Write-Host 'Die Installation ist nicht vollstaendig. Nach dem Beheben Install.cmd einfach erneut starten -'
     Write-Host 'Einstellungen (config.yaml, secrets.yaml, state\) bleiben dabei erhalten.'
     $exitCode = 2
+    $script:completed = $true
+} finally {
+    if (-not $script:completed) {
+        # Strg+C haelt das ganze Skript an: catch-Bloecke und "exit" laufen dann nicht mehr, nur finally.
+        Write-Host ''
+        Write-JarvisWarn 'Abgebrochen (Strg+C) - Install.cmd einfach erneut starten; config.yaml, secrets.yaml und state\ bleiben erhalten.'
+        [System.Environment]::Exit(1)
+    }
 }
 exit $exitCode

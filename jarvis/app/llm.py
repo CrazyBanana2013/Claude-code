@@ -102,7 +102,7 @@ class OllamaAgent:
                         caps = show.json().get("capabilities")
                         if isinstance(caps, list):
                             info["tools_supported"] = "tools" in caps
-        except (httpx.HTTPError, ValueError, AttributeError):
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError):
             pass
         if not info["model"]:
             info["note"] = "Kein Modell konfiguriert – Regel-Parser aktiv."
@@ -137,6 +137,8 @@ class OllamaAgent:
             raise LLMUnavailable("Ollama antwortet nicht rechtzeitig.") from None
         except httpx.HTTPError:
             raise LLMUnavailable(f"Ollama nicht erreichbar unter {self.base}.") from None
+        except (httpx.InvalidURL, UnicodeError):
+            raise LLMUnavailable(f"Ungültige Ollama-Adresse '{self.base}' – llm.base_url in config.yaml prüfen.") from None
         try:
             data = r.json()
         except ValueError:

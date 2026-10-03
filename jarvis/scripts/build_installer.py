@@ -9,9 +9,10 @@ launcher/ und scripts/. Nie enthalten: tests/, .venv, state/, dist/, config.yaml
 secrets.yaml, __pycache__, *.pyc, .pytest_cache.
 
 - .ps1/.cmd/.bat bekommen im ZIP CRLF-Zeilenenden und müssen reines ASCII sein
-  (Windows PowerShell 5.1 liest UTF-8 ohne BOM als ANSI).
+  (Windows PowerShell 5.1 liest UTF-8 ohne BOM als ANSI). Andere Textdateien (.py, .md, .yaml,
+  .toml, .lock, .txt, .html, ...) bekommen LF – egal, wie sie ausgecheckt wurden (core.autocrlf).
 - Reproduzierbar: sortierte Einträge, feste Zeitstempel (1980-01-01 bzw. SOURCE_DATE_EPOCH),
-  feste Dateiattribute, ZIP_DEFLATED.
+  feste Dateiattribute, ZIP_DEFLATED, einheitliche Zeilenenden.
 - Neben dem ZIP entsteht <zip>.sha256 (Format wie sha256sum).
 
 Exit-Codes: 0 = gebaut, 2 = Fehler (Meldung auf stderr, kein Stacktrace).
@@ -68,13 +69,26 @@ SKIP_FILE_NAMES = frozenset({".ds_store", "thumbs.db"})
 
 # Dürfen nie ins Paket. Taucht so etwas in einem Include-Ordner auf, bricht der Build ab.
 # config.yaml.bak = Sicherung des Einrichtungsassistenten (enthält die Einstellungen des Benutzers).
-FORBIDDEN_FILE_NAMES = frozenset({"config.yaml", "config.yaml.bak", "secrets.yaml", ".jarvis-install.json"})
+FORBIDDEN_FILE_NAMES = frozenset({"config.yaml", "config.yaml.bak", "secrets.yaml", ".jarvis-install.json",
+                                  ".jarvis-install.json.tmp"})
+# Auch Kopien davon (config.yaml.orig, config.yaml.bak2, secrets.yml.txt, .config.yaml.x.tmp ...) und
+# typische Sicherungsdateien – darin stehen oft echte Adressen, Hostnamen oder Token.
+FORBIDDEN_NAME_PREFIXES = ("config.yaml", "secrets.", ".config.yaml.", ".secrets.")
+FORBIDDEN_NAME_SUFFIXES = (".bak", ".orig", ".old", "~")
 FORBIDDEN_DIR_NAMES = frozenset({"state"})
 
 WINDOWS_SCRIPT_SUFFIXES = (".ps1", ".cmd", ".bat")
+# Textdateien, deren Zeilenenden im Paket auf LF vereinheitlicht werden (nur bekannte Endungen,
+# damit nie eine Binärdatei verändert wird).
+TEXT_SUFFIXES = (".py", ".pyw", ".md", ".yaml", ".yml", ".toml", ".lock", ".txt", ".html", ".htm", ".js",
+                 ".mjs", ".css", ".json", ".cfg", ".ini", ".svg")
 
-# api_token: <32+ Zeichen> – sieht nach einem echten Token aus (Platzhalter sind kürzer).
-TOKEN_PATTERN = re.compile(rb"""api_token\s*:\s*["']?[A-Za-z0-9_\-+/=.]{32,}""")
+# api_token: <32+ Zeichen> – sieht nach einem echten Token aus (Platzhalter sind kürzer). Auch als
+# JSON ("api_token": "..."), mit '=' und in anderer Schreibweise (API_TOKEN, apiToken, api-token).
+TOKEN_PATTERN = re.compile(rb"""(?i)["']?api[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9_\-+/=.]{32,}""")
+
+# Letzter Zeitpunkt, den ein ZIP-Eintrag speichern kann (2107-12-31 23:59:59 UTC).
+MAX_ZIP_EPOCH = 4354819199
 
 VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
 
@@ -111,7 +125,14 @@ def zip_date_time() -> tuple[int, int, int, int, int, int]:
         raise BuildError(
             f"SOURCE_DATE_EPOCH muss eine ganze Zahl (Sekunden seit 1970) sein, nicht {raw!r}."
         ) from None
-    stamp = time.gmtime(max(epoch, 0))
+    if epoch > MAX_ZIP_EPOCH:
+        raise BuildError("SOURCE_DATE_EPOCH liegt nach 2107 – das kann ZIP nicht speichern (Sekunden, nicht Millisekunden?).")
+    try:
+        stamp = time.gmtime(max(epoch, 0))
+    except (OverflowError, OSError, ValueError):
+        raise BuildError(
+            "SOURCE_DATE_EPOCH liegt außerhalb des gültigen Bereichs (Sekunden seit 1970, höchstens Jahr 2107)."
+        ) from None
     if stamp.tm_year < 1980:
         return DEFAULT_DATE_TIME
     if stamp.tm_year > 2107:
@@ -125,10 +146,12 @@ def _check_entry(path: Path, rel: str) -> None:
             f"Symbolischer Link wird nicht verpackt: {rel} – bitte durch eine echte Datei ersetzen."
         )
     parts = rel.lower().split("/")
-    if parts[-1] in FORBIDDEN_FILE_NAMES or any(p in FORBIDDEN_DIR_NAMES for p in parts[:-1]):
+    name = parts[-1]
+    if (name in FORBIDDEN_FILE_NAMES or name.startswith(FORBIDDEN_NAME_PREFIXES)
+            or name.endswith(FORBIDDEN_NAME_SUFFIXES) or any(p in FORBIDDEN_DIR_NAMES for p in parts[:-1])):
         raise BuildError(
-            f"Verbotene Datei im Paket: {rel} – config.yaml(.bak), secrets.yaml und state/ gehören dem Benutzer "
-            "und dürfen nie ausgeliefert werden. Bitte entfernen."
+            f"Verbotene Datei im Paket: {rel} – config.yaml (auch Kopien/Sicherungen), secrets.*, *.bak/*.orig/*.old "
+            "und state/ gehören dem Benutzer bzw. sind Reste und dürfen nie ausgeliefert werden. Bitte entfernen."
         )
 
 
@@ -193,16 +216,19 @@ def collect_files(src: Path) -> list[str]:
 
 
 def prepare_content(rel: str, data: bytes) -> bytes:
-    """Prüft den Inhalt und wandelt Windows-Skripte nach CRLF."""
+    """Prüft den Inhalt; Windows-Skripte bekommen CRLF, andere Textdateien LF (reproduzierbar)."""
     if TOKEN_PATTERN.search(data):
         raise BuildError(f"{rel} enthält anscheinend ein echtes API-Token (api_token: ...). Bitte entfernen.")
-    if rel.lower().endswith(WINDOWS_SCRIPT_SUFFIXES):
+    lower = rel.lower()
+    if lower.endswith(WINDOWS_SCRIPT_SUFFIXES):
         if any(byte > 0x7F for byte in data):
             raise BuildError(
                 f"{rel} enthält Nicht-ASCII-Zeichen (Umlaute/BOM). PowerShell- und .cmd-Dateien müssen "
                 "reines ASCII sein (ae/oe/ue/ss oder [char]0x00E4 verwenden)."
             )
         data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    elif lower.endswith(TEXT_SUFFIXES):
+        data = data.replace(b"\r\n", b"\n")
     return data
 
 

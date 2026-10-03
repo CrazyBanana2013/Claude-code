@@ -125,6 +125,8 @@ async def _request(ctx: ToolContext, method: str, path: str, payload: dict | Non
         raise ToolError(f"WLED antwortet nicht (Timeout nach {ctx.config.wled.timeout:g} s).") from None
     except httpx.HTTPError as exc:
         raise ToolError(f"WLED nicht erreichbar ({type(exc).__name__}).") from None
+    except (httpx.InvalidURL, ValueError, UnicodeError):
+        raise ToolError(f"Ungültige WLED-Adresse '{url}' – 'wled.base_url' in config.yaml prüfen.") from None
     if resp.status_code >= 400:
         raise ToolError(f"WLED meldet HTTP {resp.status_code} für {path}.")
     try:

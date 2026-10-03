@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ipaddress
 import json
 import math
 import ntpath
@@ -122,18 +123,11 @@ def builtin_defaults() -> dict:
 
 
 def load_existing(path: Path) -> dict:
-    """Vorhandene config.yaml als vollständiges dict (alle Felder). Wirft ConfigError mit Klartext."""
-    try:
-        return load_config(path).model_dump()
-    except UnicodeDecodeError:
-        raise ConfigError(
-            f"{path.name} ist nicht UTF-8-kodiert (z. B. im Editor als 'ANSI' gespeichert). "
-            "Bitte im Editor mit Codierung UTF-8 speichern."
-        ) from None
-    except IsADirectoryError:
-        raise ConfigError(f"{path} ist ein Ordner, keine Datei.") from None
-    except OSError as exc:
-        raise ConfigError(f"{path} kann nicht gelesen werden: {exc.strerror or exc}") from None
+    """Vorhandene config.yaml als vollständiges dict (alle Felder). Wirft ConfigError mit Klartext.
+
+    Kodierungs- und Lesefehler übersetzt load_config selbst (gleiche Meldung wie beim Serverstart).
+    """
+    return load_config(path).model_dump()
 
 
 def load_defaults(example: Path | None) -> tuple[dict, str | None]:
@@ -366,6 +360,17 @@ _LABEL = r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?"
 _HOST_RE = re.compile(rf"(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})*\.?")
 
 
+_SCHEME_TYPO = re.compile(r"(?i)^https?(?::/?(?!/)|/)")
+
+
+def _is_ipv6(text: str) -> bool:
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
 def normalize_base_url(raw: str) -> str:
     """'<IP>', 'wled.local:8080', 'http://<host>/json' → 'http://<host>[:port]'. ValueError mit Klartext."""
     text = strip_quotes(raw.strip())
@@ -373,7 +378,15 @@ def normalize_base_url(raw: str) -> str:
         raise ValueError("Keine Adresse eingegeben.")
     if any(c.isspace() for c in text):
         raise ValueError("Die Adresse darf keine Leerzeichen enthalten.")
+    if "\\" in text:
+        raise ValueError("Bitte / statt \\ verwenden, z. B. http://<adresse>.")
     if "://" not in text:
+        if _SCHEME_TYPO.match(text):  # 'http//…', 'http:/…', 'https//…' – lieber nachfragen als raten
+            raise ValueError("Bitte als http://<adresse> eingeben (mit Doppelpunkt und zwei Schrägstrichen).")
+        if "%" in text:
+            raise ValueError("IPv6-Adressen mit Zonen-ID (%…) werden nicht unterstützt.")
+        if _is_ipv6(text):  # IPv6 ohne eckige Klammern, z. B. fd00::5
+            text = f"[{text}]"
         text = "http://" + text
     parts = urlsplit(text)
     scheme = parts.scheme.lower()
@@ -389,16 +402,23 @@ def normalize_base_url(raw: str) -> str:
     if port == 0:
         raise ValueError("Ungültiger Port (erlaubt: 1 bis 65535).")
     if ":" in host:  # IPv6 in eckigen Klammern
-        import ipaddress
-
-        try:
-            ipaddress.IPv6Address(host)
-        except ValueError:
-            raise ValueError(f"'{host}' ist keine gültige IPv6-Adresse.") from None
+        if "%" in host:
+            raise ValueError("IPv6-Adressen mit Zonen-ID (%…) werden nicht unterstützt.")
+        if not _is_ipv6(host):
+            raise ValueError(f"'{host}' ist keine gültige IPv6-Adresse.")
         netloc = f"[{host}]"
     else:
         if not host or not _HOST_RE.fullmatch(host):
             raise ValueError("Kein gültiger Hostname oder keine gültige IP-Adresse erkennbar.")
+        if host in ("http", "https"):
+            raise ValueError("Bitte als http://<adresse> eingeben (mit Doppelpunkt und zwei Schrägstrichen).")
+        if re.fullmatch(r"[0-9.]+", host):  # sieht nach IPv4 aus – dann muss es auch eine gültige sein
+            try:
+                ipaddress.IPv4Address(host)  # lehnt auch führende Nullen ab (192.168.001.050)
+            except ValueError:
+                raise ValueError(
+                    f"'{host}' ist keine gültige IP-Adresse (vier Zahlen von 0 bis 255, ohne führende Nullen)."
+                ) from None
         netloc = host
     if port is not None:
         netloc += f":{port}"
@@ -419,9 +439,15 @@ def _get(http: httpx.Client, url: str) -> httpx.Response | ProbeResult:
     try:
         return http.get(url, timeout=PROBE_TIMEOUT)
     except httpx.TimeoutException:
-        return ProbeResult(False, f"Keine Antwort nach {PROBE_TIMEOUT:g} s ({url}).", reachable=False)
+        return ProbeResult(False, f"Keine Antwort nach {PROBE_TIMEOUT:g} s ({url}) – Gerät aus oder Adresse falsch?",
+                           reachable=False)
+    except httpx.ConnectError:
+        return ProbeResult(False, f"Nicht erreichbar: {url} – Verbindung abgelehnt bzw. Gerät aus oder Adresse falsch?",
+                           reachable=False)
     except httpx.HTTPError as exc:
         return ProbeResult(False, f"Nicht erreichbar ({type(exc).__name__}): {url}", reachable=False)
+    except (httpx.InvalidURL, ValueError, UnicodeError) as exc:  # z. B. von Hand eingetragene 192.168.1.300
+        return ProbeResult(False, f"Ungültige Adresse: {url} ({exc})", reachable=False)
 
 
 def _json(resp: httpx.Response) -> Any:
@@ -632,11 +658,15 @@ def suggest_command(
     elif ext == ".exe":
         command = [path]
     elif ext in (".bat", ".cmd"):
-        command = ["cmd.exe", "/c", path]
-        if any(c in path for c in "&()^@%!"):
+        # "call" vorn: Der Text nach /c beginnt dann nicht mit einem Anführungszeichen, cmd lässt die
+        # Anführungszeichen um den Pfad stehen – Pfade wie "C:\Program Files (x86)\..." funktionieren.
+        # /d: keine AutoRun-Befehle aus der Registry.
+        command = ["cmd.exe", "/d", "/c", "call", path]
+        quoted = any(c.isspace() for c in path)  # nur dann setzt Windows den Pfad in Anführungszeichen
+        if any(c in path for c in "%^!") or (not quoted and any(c in path for c in "&()")):
             notes.append(
-                "Der Pfad enthält Sonderzeichen wie & ( ) ^ – falls der Start nicht klappt, die Datei in "
-                "einen Ordner ohne diese Zeichen legen."
+                "Der Pfad enthält Sonderzeichen wie % ^ ! (bzw. & ( ) ohne Leerzeichen im Pfad), die cmd.exe "
+                "auswertet – falls der Start nicht klappt, die Datei in einen Ordner ohne diese Zeichen legen."
             )
     else:
         command = None
@@ -663,6 +693,13 @@ def _display(value: Any) -> str:
 
 def _header(step: str, title: str) -> str:
     return f"\n--- Schritt {step}: {title} ---"
+
+
+def _skip_hint(configured: bool) -> str:
+    """Bedeutung von Enter und '-' – je nachdem, ob schon ein Wert eingerichtet ist (wie beim CS2-Skript)."""
+    if configured:
+        return "Enter = unverändert lassen, '-' = auf TODO zurücksetzen (nicht eingerichtet)."
+    return "Enter bzw. '-' = überspringen (bleibt TODO)."
 
 
 class Wizard:
@@ -732,13 +769,15 @@ class Wizard:
         wled = self.data["wled"]
         self.say(_header("1/5", "WLED (LED-Strip)"))
         self.say("IP-Adresse (z. B. aus der WLED-App), Hostname oder URL des WLED-Controllers.")
-        self.say("Enter = Wert übernehmen, '-' = überspringen (bleibt TODO).")
+        self.say(_skip_hint(not is_todo(wled["base_url"])))
         while True:
             raw = self.ask("WLED-Adresse", wled["base_url"])
             if raw == SKIP or (not raw and is_todo(wled["base_url"])):
                 if not is_todo(wled["base_url"]):
                     wled["base_url"] = TODO_WLED
-                self.say("  WLED bleibt nicht eingerichtet.")
+                    self.say("  WLED ist jetzt nicht eingerichtet (TODO).")
+                else:
+                    self.say("  WLED bleibt nicht eingerichtet.")
                 return
             url = self._parse_url(raw, wled["base_url"])
             if url is None:
@@ -780,7 +819,8 @@ class Wizard:
         managed = sensors[:2]
         names = " und ".join(f"'{s['name']}'" for s in managed)
         self.say(f"Ein ESPHome-Gerät liefert normalerweise beide Werte ({names}).")
-        self.say("Adresse: IP, Hostname oder URL. Enter = übernehmen, '-' = überspringen (bleibt TODO).")
+        configured = any(not is_todo(s["base_url"]) for s in managed)
+        self.say("Adresse: IP, Hostname oder URL. " + _skip_hint(configured))
 
         bases = {s["base_url"] for s in managed if not is_todo(s["base_url"])}
         if len(bases) <= 1:
@@ -794,7 +834,7 @@ class Wizard:
                 s["base_url"] = self._ask_device(f"ESPHome-Gerät für '{s['name']}'", s["base_url"])
 
         if all(is_todo(s["base_url"]) for s in managed):
-            self.say("  ESPHome bleibt nicht eingerichtet.")
+            self.say("  ESPHome ist jetzt nicht eingerichtet (TODO)." if configured else "  ESPHome bleibt nicht eingerichtet.")
             return
         self.say("Entitätsname = 'name:' des Sensors genau wie in der ESPHome-YAML,")
         self.say("z. B. BME280 Temperature (Anführungszeichen sind nicht nötig).")
@@ -831,7 +871,9 @@ class Wizard:
             if raw == SKIP or (not raw and is_todo(sensor["entity_id"])):
                 if not is_todo(sensor["entity_id"]):
                     sensor["entity_id"] = todo_entity(sensor["name"])
-                self.say(f"  '{sensor['name']}' bleibt nicht eingerichtet.")
+                    self.say(f"  '{sensor['name']}' ist jetzt nicht eingerichtet (TODO).")
+                else:
+                    self.say(f"  '{sensor['name']}' bleibt nicht eingerichtet.")
                 return
             entity = raw or sensor["entity_id"]
             if not self.probe or sensor["base_url"] in self._unreachable:
@@ -1013,7 +1055,8 @@ class Wizard:
         self.say("  verstehen die Kernbefehle (z. B. 'Licht an', 'Helligkeit 40', 'Wie warm ist es?').")
         self.say("  Für den Chat mit Sprachmodell ein kleines Modell mit Tool-Support aussuchen")
         self.say("  (https://ollama.com/search?c=tools), selbst in einer Konsole 'ollama pull <name>'")
-        self.say("  ausführen und danach diesen Assistenten erneut starten (oder scripts\\pick_model.py).")
+        self.say("  ausführen, danach Install.cmd erneut starten und 'Konfiguration jetzt anpassen?' mit j")
+        self.say("  beantworten.")
         self.say(f"  llm.model bleibt: {_display(current)}")
 
     # --- e) Port ---------------------------------------------------------------------------
@@ -1143,8 +1186,9 @@ def _configure_interactive(config_path, example_path, io, http, is_file, is_dir,
     io.say("=" * 64)
     io.say("Dieser Assistent fragt die wichtigsten Einstellungen ab und speichert sie in:")
     io.say(f"  {config_path}")
-    io.say("In eckigen Klammern steht der aktuelle Wert – Enter übernimmt ihn. Abbrechen mit Strg+C,")
-    io.say("dann bleibt alles unverändert. Gespeichert wird erst nach der Zusammenfassung.")
+    io.say("In eckigen Klammern steht der aktuelle Wert – Enter übernimmt ihn. Gespeichert wird erst nach")
+    io.say(f"der Zusammenfassung. Abbrechen mit Strg+C: {config_path.name} bleibt dann unverändert (fragt")
+    io.say("Windows danach 'Batchvorgang abbrechen (J/N)?', mit J bestätigen).")
     if note:
         io.say(f"Hinweis: {note}")
     if config_path.exists():
@@ -1188,6 +1232,8 @@ def _configure_interactive(config_path, example_path, io, http, is_file, is_dir,
     io.say(f"Gespeichert: {config_path}")
     if backup is not None:
         io.say(f"Sicherung der alten Datei: {backup}")
+    io.say("Damit Änderungen wirken: JARVIS neu starten (Startmenü > JARVIS > JARVIS beenden, dann")
+    io.say("JARVIS starten). Install.cmd erledigt das automatisch.")
     warnings = config_warnings(parse_config(final))
     if warnings:
         io.say("Noch offen (JARVIS startet trotzdem):")

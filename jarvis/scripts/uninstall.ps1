@@ -17,7 +17,9 @@
   geloescht. Ohne -Purge bleibt neben den Einstellungen ein Rest-Marker (ohne Dateiliste) liegen:
   So darf ein spaeteres "uninstall.ps1 -Target <Ordner> -Purge" (z. B. aus dem entpackten Paket)
   die Einstellungen noch loeschen, und eine Neuinstallation uebernimmt sie.
-  Exitcodes: 0 = ok, 1 = abgebrochen, 2 = Fehler / nicht alles entfernt.
+  Einstellungen, die schon vor der ersten Installation im Ordner lagen (Marker: "preexisting"),
+  werden auch mit -Purge nie geloescht.
+  Exitcodes: 0 = ok, 1 = abgebrochen (auch Strg+C), 2 = Fehler / nicht alles entfernt.
 #>
 param(
     [string]$Target,
@@ -33,6 +35,7 @@ $ErrorActionPreference = 'Stop'
 
 $TotalSteps = 5
 $exitCode = 0
+$script:completed = $false
 try {
     Write-Host ''
     Write-Host '=== JARVIS deinstallieren ===' -ForegroundColor Cyan
@@ -44,7 +47,13 @@ try {
     Write-JarvisStep 1 $TotalSteps 'Pruefen'
     Assert-JarvisPlatform -AllowNonWindows:$AllowNonWindows
     Assert-JarvisNotElevated -AllowAdmin:$AllowAdmin
+    # powershell.exe liest -Target "D:\JARVIS\" als D:\JARVIS" (\" = Anfuehrungszeichen im Wert).
     if ($Target) { $Target = $Target.Trim().Trim('"') }
+    if ($Target -and $Target.Contains('"')) {
+        throw ('Der Pfad bei -Target endet vermutlich mit \" (Backslash vor dem Anfuehrungszeichen) - dadurch wurden ' +
+            'die folgenden Optionen verschluckt ({0}). Bitte -Target ohne abschliessenden Backslash angeben, z. B. ' +
+            '-Target "D:\JARVIS".') -f $Target
+    }
     if (-not $Target) { $Target = Split-Path -Parent $PSScriptRoot }
     $Target = Assert-JarvisSafeTarget $Target
     if (-not [System.IO.Directory]::Exists($Target)) { throw ('Ordner nicht gefunden: {0}' -f $Target) }
@@ -53,6 +62,7 @@ try {
         throw ("In '{0}' gibt es keinen Installationsmarker ({1}). Aus Sicherheitsgruenden wird nichts geloescht." -f $Target, (Get-JarvisMarkerName))
     }
     $isRemnant = Test-JarvisRemnantManifest $manifest
+    $preexisting = @(Get-JarvisManifestList $manifest 'preexisting')
     $doPurge = [bool]$Purge
     if ($isRemnant) {
         # Rest einer frueheren Deinstallation ohne -Purge: nur noch Einstellungen und Daten.
@@ -121,18 +131,22 @@ try {
     $fileResult = Remove-JarvisRelativeFiles -Target $Target -Files (Get-JarvisManifestList $manifest 'files')
     Add-JarvisRemovalResult -Into $result -From $fileResult
     Write-JarvisInfo ('Programmdateien entfernt: {0}' -f $fileResult.Removed.Count)
-    foreach ($x in $fileResult.Skipped) { Write-JarvisWarn ('Nicht angefasst (ungueltiger Eintrag im Marker): ' + $x) }
+    foreach ($x in $fileResult.Skipped) { Write-JarvisWarn ('Nicht angefasst (ungueltiger Eintrag im Marker oder hinter einem Ordner-Link): ' + $x) }
     if ($doPurge) {
-        # config.yaml, config.yaml.bak, secrets.yaml und Zwischendateien des Assistenten - nur direkt im Ziel.
+        # config.yaml, config.yaml.bak, secrets.yaml und Zwischendateien des Assistenten - nur direkt im Ziel,
+        # und nie, was schon vor der ersten Installation da war ("preexisting" im Marker).
         $names = @([System.IO.Directory]::GetFiles($Target) | ForEach-Object { [System.IO.Path]::GetFileName($_) } |
             Where-Object { Test-JarvisUserDataFileName $_ } | Sort-Object)
         foreach ($name in $names) {
+            if ($preexisting -contains $name) { Write-JarvisInfo ('Bleibt (lag schon vor der Installation hier): ' + $name); continue }
             $path = Join-Path $Target $name
             try { Remove-JarvisFileEntry $path; $result.Removed.Add($path); Write-JarvisInfo ('Entfernt: ' + $name) }
             catch { $result.Failed.Add(('{0} ({1})' -f $name, (Get-JarvisErrorMessage $_))) }
         }
         $stateDir = Join-Path $Target 'state'
-        if ([System.IO.Directory]::Exists($stateDir) -or (Test-JarvisReparsePoint $stateDir)) {
+        if ($preexisting -contains 'state') {
+            if ([System.IO.Directory]::Exists($stateDir)) { Write-JarvisInfo 'Bleibt (lag schon vor der Installation hier): state\' }
+        } elseif ([System.IO.Directory]::Exists($stateDir) -or (Test-JarvisReparsePoint $stateDir)) {
             try { Remove-JarvisTree -Path $stateDir -Root $Target; $result.Removed.Add($stateDir); Write-JarvisInfo 'Entfernt: state\' }
             catch { $result.Failed.Add(('state ({0})' -f (Get-JarvisErrorMessage $_))) }
         }
@@ -143,6 +157,7 @@ try {
         $marker = Get-JarvisManifestPath $Target
         $keptUserData = @()
         if (-not $doPurge) { $keptUserData = @(Get-JarvisUserDataEntries $Target) }
+        elseif ($preexisting.Count -gt 0) { $keptUserData = @(Get-JarvisUserDataEntries $Target | Where-Object { $preexisting -contains $_ }) }
         try {
             if ($keptUserData.Count -gt 0) {
                 Write-JarvisManifest -Target $Target -Manifest (New-JarvisRemnantManifest $manifest)
@@ -160,7 +175,7 @@ try {
     if ([System.IO.Directory]::Exists($Target)) {
         $entries = @([System.IO.Directory]::GetFileSystemEntries($Target) | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Sort-Object)
         # Der (Rest-)Marker gehoert dem Installer und wird nicht als "behalten" aufgelistet.
-        $left = @($entries | Where-Object { $_ -ne (Get-JarvisMarkerName) })
+        $left = @($entries | Where-Object { $_ -ne (Get-JarvisMarkerName) -and $_ -ne (Get-JarvisMarkerTempName) })
         if ($entries.Count -eq 0) {
             try {
                 [System.IO.Directory]::Delete($Target, $false)
@@ -186,17 +201,30 @@ try {
         $exitCode = 2
     } else {
         Write-JarvisOk 'JARVIS wurde deinstalliert. uv, Python und Ollama bleiben unveraendert installiert.'
+        Write-JarvisInfo 'Caches (z. B. %LOCALAPPDATA%\uv\cache, %LOCALAPPDATA%\pip\Cache) entfernen: siehe README, "Deinstallieren".'
     }
+    $script:completed = $true
 } catch [System.OperationCanceledException] {
     Write-Host ''
     Write-JarvisWarn $_.Exception.Message
     $exitCode = 1
+    $script:completed = $true
 } catch {
     Write-Host ''
     Write-JarvisErr (Get-JarvisErrorMessage $_)
-    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
+    $prepared = ($_.Exception.GetType() -eq [System.Management.Automation.RuntimeException] -and
+        [string]$_.FullyQualifiedErrorId -eq [string]$_.Exception.Message)
+    if (-not $prepared -and $_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
         Write-Host ('       (Stelle: {0}, Zeile {1})' -f (Split-Path -Leaf $_.InvocationInfo.ScriptName), $_.InvocationInfo.ScriptLineNumber) -ForegroundColor DarkGray
     }
     $exitCode = 2
+    $script:completed = $true
+} finally {
+    if (-not $script:completed) {
+        # Strg+C haelt das ganze Skript an: catch-Bloecke und "exit" laufen dann nicht mehr, nur finally.
+        Write-Host ''
+        Write-JarvisWarn 'Abgebrochen (Strg+C) - Uninstall.cmd spaeter einfach erneut starten.'
+        [System.Environment]::Exit(1)
+    }
 }
 exit $exitCode

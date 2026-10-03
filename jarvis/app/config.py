@@ -159,7 +159,18 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             f"                    cp config.example.yaml config.yaml    (Linux/macOS)"
         )
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ConfigError(
+            f"{path.name} ist nicht UTF-8-kodiert (z. B. im Editor als 'ANSI' gespeichert). "
+            "Bitte im Editor mit Codierung UTF-8 speichern."
+        ) from None
+    except IsADirectoryError:
+        raise ConfigError(f"{path} ist ein Ordner, keine Datei.") from None
+    except OSError as exc:
+        raise ConfigError(f"{path} kann nicht gelesen werden: {exc.strerror or exc}") from None
+    try:
+        data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         where = f" (Zeile {mark.line + 1}, Spalte {mark.column + 1})" if mark else ""

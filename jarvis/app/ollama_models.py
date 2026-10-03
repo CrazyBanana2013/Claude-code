@@ -51,8 +51,12 @@ def list_models(client: httpx.Client, base: str, *, timeout: float | None = None
         resp = client.get(f"{base}/api/tags", **kwargs)
     except httpx.TimeoutException:
         raise OllamaUnavailable(f"Ollama antwortet nicht ({base}, Zeitüberschreitung)") from None
+    except httpx.ConnectError:
+        raise OllamaUnavailable(f"Ollama nicht erreichbar ({base}, Verbindung abgelehnt – läuft Ollama?)") from None
     except httpx.HTTPError as exc:
         raise OllamaUnavailable(f"Ollama nicht erreichbar ({base}, {type(exc).__name__})") from None
+    except (httpx.InvalidURL, ValueError, UnicodeError):  # z. B. von Hand eingetragene http://127.0.0.256:11434
+        raise OllamaUnavailable(f"Ungültige Ollama-Adresse ({base}) – llm.base_url in config.yaml prüfen") from None
     if resp.status_code != 200:
         raise OllamaUnavailable(f"Ollama antwortet mit HTTP {resp.status_code} ({base}/api/tags)")
     try:
@@ -78,7 +82,7 @@ def list_models(client: httpx.Client, base: str, *, timeout: float | None = None
 def _capabilities(client: httpx.Client, base: str, name: str, kwargs: dict) -> tuple[str, ...]:
     try:
         show = client.post(f"{base}/api/show", json={"model": name}, **kwargs)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, UnicodeError):
         return ()
     if show.status_code != 200:
         return ()

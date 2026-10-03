@@ -214,11 +214,148 @@ function Test-JarvisRelPathValid {
     }
     foreach ($segment in ($RelPath -split '[\\/]')) {
         if ($segment -eq '' -or $segment -eq '.' -or $segment -eq '..') { return $false }
+        # Windows schneidet Punkte/Leerzeichen am Ende ab ("config.yaml " = config.yaml) und kennt
+        # 8.3-Kurznamen (CONFIG~1.YAM) - solche Namen koennten den Schutz der Benutzerdaten umgehen.
+        if ($segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.StartsWith(' ')) { return $false }
+        if ($segment -match '~[0-9]') { return $false }
     }
     return $true
 }
 
+# Kleine Windows-API-Hilfen (nur unter Windows per Add-Type geladen, C# 5 fuer Windows PowerShell 5.1):
+# - GetReparseTag: Reparse-Tag eines Eintrags (FindFirstFileW, WIN32_FIND_DATA.dwReserved0) - so lassen
+#   sich Links/Junctions von OneDrive-Platzhaltern unterscheiden (wie IsReparsePointLikeSymlink in PS 7).
+# - GetFinalPath: "echter" Pfad eines vorhandenen Ordners (Links, Junctions, subst, 8.3-Kurznamen aufgeloest).
+$script:JarvisNativeSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace JarvisInstaller {
+    public static class NativeFs {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FindData {
+            public uint dwFileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+            public uint nFileSizeHigh;
+            public uint nFileSizeLow;
+            public uint dwReserved0;
+            public uint dwReserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string cFileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string cAlternateFileName;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstFileW(string lpFileName, out FindData lpFindFileData);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool FindClose(IntPtr hFindFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+            IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle hFile, StringBuilder lpszFilePath,
+            uint cchFilePath, uint dwFlags);
+
+        private static string LongPath(string path) {
+            if (path.Length < 248 || path.StartsWith(@"\\?\")) { return path; }
+            if (path.StartsWith(@"\\")) { return @"\\?\UNC\" + path.Substring(2); }
+            return @"\\?\" + path;
+        }
+
+        // 0 = kein Reparse-Punkt, -1 = nicht lesbar, sonst der Tag (0 bis 0xFFFFFFFF).
+        public static long GetReparseTag(string path) {
+            FindData data;
+            IntPtr handle = FindFirstFileW(LongPath(path), out data);
+            if (handle == new IntPtr(-1)) { return -1; }
+            FindClose(handle);
+            if ((data.dwFileAttributes & 0x400) == 0) { return 0; }
+            return (long)data.dwReserved0;
+        }
+
+        // null, wenn der Pfad nicht geoeffnet werden kann.
+        public static string GetFinalPath(string path) {
+            // Zugriff 0 (nur Attribute), Freigabe lesen/schreiben/loeschen, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS (Ordner).
+            using (SafeFileHandle handle = CreateFileW(LongPath(path), 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (handle.IsInvalid) { return null; }
+                StringBuilder sb = new StringBuilder(1024);
+                uint n = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, 0);
+                if (n == 0) { return null; }
+                if (n >= sb.Capacity) {
+                    sb = new StringBuilder((int)n + 1);
+                    n = GetFinalPathNameByHandleW(handle, sb, (uint)sb.Capacity, 0);
+                    if (n == 0 || n >= sb.Capacity) { return null; }
+                }
+                string s = sb.ToString();
+                if (s.StartsWith(@"\\?\UNC\")) { return @"\\" + s.Substring(8); }
+                if (s.StartsWith(@"\\?\")) { return s.Substring(4); }
+                return s;
+            }
+        }
+    }
+}
+'@
+$script:JarvisNativeState = $null
+
+function Initialize-JarvisNative {
+    # $true, wenn die Windows-API-Hilfen verfuegbar sind. Sonst (kein Windows, Add-Type gesperrt) $false:
+    # Die Aufrufer nehmen dann die sichere Seite (unbekannter Reparse-Punkt = Link).
+    if ($null -ne $script:JarvisNativeState) { return [bool]$script:JarvisNativeState }
+    $script:JarvisNativeState = $false
+    if (-not (Test-JarvisWindows)) { return $false }
+    try {
+        if (-not ('JarvisInstaller.NativeFs' -as [type])) {
+            Add-Type -TypeDefinition $script:JarvisNativeSource -ErrorAction Stop
+        }
+        $script:JarvisNativeState = $true
+    } catch {
+        $script:JarvisNativeState = $false
+    }
+    return [bool]$script:JarvisNativeState
+}
+
+function Get-JarvisReparseTag {
+    # Reparse-Tag eines Eintrags mit dem Attribut ReparsePoint; $null = nicht lesbar. Ausserhalb von
+    # Windows (nur Testmodus) haben nur symbolische Links dieses Attribut: IO_REPARSE_TAG_SYMLINK.
+    param([string]$Path)
+    if (-not (Test-JarvisWindows)) { return [long]2684354572 }
+    if (-not (Initialize-JarvisNative)) { return $null }
+    try {
+        $tag = [long][JarvisInstaller.NativeFs]::GetReparseTag($Path)
+    } catch {
+        return $null
+    }
+    if ($tag -lt 0) { return $null }
+    return $tag
+}
+
+function Test-JarvisLinkTag {
+    # Link = Name-Surrogate-Bit 0x20000000 (symbolischer Link, Junction/Mount-Point) oder
+    # IO_REPARSE_TAG_APPEXECLINK (0x8000001B). OneDrive-/Cloud-Platzhalter (0x9000x01A) und
+    # Dedup-Dateien sind keine Links. Unbekannter Tag ($null) zaehlt als Link (sichere Seite).
+    param($Tag)
+    if ($null -eq $Tag) { return $true }
+    $value = [long]$Tag
+    if (($value -band [long]536870912) -ne 0) { return $true }
+    return ($value -eq [long]2147483675)
+}
+
+function Test-JarvisLinkLike {
+    # Ist der Eintrag (FileSystemInfo) ein Link/Junction? Solchen Eintraegen wird nie gefolgt.
+    # OneDrive-Platzhalter tragen ebenfalls das Attribut ReparsePoint, sind aber normale Dateien/Ordner.
+    param($Item)
+    if ($null -eq $Item) { return $false }
+    if (([int]$Item.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }
+    return (Test-JarvisLinkTag (Get-JarvisReparseTag $Item.FullName))
+}
+
 function Test-JarvisReparsePoint {
+    # True, wenn $Path ein Link/Junction ist (siehe Test-JarvisLinkLike); OneDrive-Platzhalter: False.
     param([string]$Path)
     try {
         $item = New-Object System.IO.DirectoryInfo $Path
@@ -226,10 +363,85 @@ function Test-JarvisReparsePoint {
             $item = New-Object System.IO.FileInfo $Path
             if (-not $item.Exists) { return $false }
         }
-        return (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        return (Test-JarvisLinkLike $item)
     } catch {
         return $false
     }
+}
+
+function Test-JarvisHasLinkAncestor {
+    # Liegt $Path in einem Ordner (zwischen $Root und $Path), der ein Link/Junction ist? Dann zeigt der
+    # Pfad in Wahrheit nach draussen - dort wird weder geloescht noch geschrieben.
+    param([string]$Root, [string]$Path)
+    $rootFull = Get-JarvisFullPath $Root
+    $dir = [System.IO.Path]::GetDirectoryName((Get-JarvisFullPath $Path))
+    while ($dir -and (Test-JarvisPathUnder -Path $dir -Root $rootFull)) {
+        if (Test-JarvisReparsePoint $dir) { return $true }
+        $dir = [System.IO.Path]::GetDirectoryName($dir)
+    }
+    return $false
+}
+
+function Resolve-JarvisUnixPath {
+    # Nur Testmodus (Linux/macOS): loest symbolische Links in allen Teilen eines vorhandenen Pfads auf.
+    param([string]$Path, [int]$Hops = 0)
+    if ($Hops -gt 40) { return $null }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    if (-not $parent) { return $full }
+    $resolvedParent = Resolve-JarvisUnixPath -Path $parent -Hops $Hops
+    if (-not $resolvedParent) { return $null }
+    $candidate = [System.IO.Path]::Combine($resolvedParent, [System.IO.Path]::GetFileName($full))
+    $info = New-Object System.IO.FileInfo $candidate
+    $attributes = [int]$info.Attributes
+    if ($attributes -ne -1 -and ($attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        $linkTarget = $null
+        try { $linkTarget = [string]$info.LinkTarget } catch { }
+        if ($linkTarget) {
+            if (-not $linkTarget.StartsWith('/')) { $linkTarget = [System.IO.Path]::Combine($resolvedParent, $linkTarget) }
+            return (Resolve-JarvisUnixPath -Path $linkTarget -Hops ($Hops + 1))
+        }
+    }
+    return $candidate
+}
+
+function Resolve-JarvisPhysicalPath {
+    # Der "echte" Pfad: Links/Junctions, subst-Laufwerke und 8.3-Kurznamen aufgeloest (fuer den Teil,
+    # der schon existiert; der Rest wird angehaengt). $null, wenn das nicht ermittelt werden kann.
+    param([string]$Path)
+    $full = Get-JarvisFullPath $Path
+    $existing = $full
+    $rest = New-Object System.Collections.Generic.List[string]
+    while (-not ([System.IO.Directory]::Exists($existing) -or [System.IO.File]::Exists($existing))) {
+        $parent = [System.IO.Path]::GetDirectoryName($existing)
+        if (-not $parent -or $parent -eq $existing) { return $full }
+        $rest.Insert(0, [System.IO.Path]::GetFileName($existing))
+        $existing = $parent
+    }
+    $resolved = $null
+    if (Test-JarvisWindows) {
+        if (Initialize-JarvisNative) {
+            try { $resolved = [JarvisInstaller.NativeFs]::GetFinalPath($existing) } catch { $resolved = $null }
+        }
+    } else {
+        $resolved = Resolve-JarvisUnixPath -Path $existing
+    }
+    if (-not $resolved) { return $null }
+    foreach ($segment in $rest) { $resolved = [System.IO.Path]::Combine($resolved, $segment) }
+    return (Get-JarvisFullPath $resolved)
+}
+
+function Test-JarvisPathHasLink {
+    # Ist der Pfad selbst oder einer seiner vorhandenen Elternordner ein Link/Junction?
+    param([string]$Path)
+    $current = Get-JarvisFullPath $Path
+    while ($current) {
+        if (Test-JarvisReparsePoint $current) { return $true }
+        $parent = [System.IO.Path]::GetDirectoryName($current)
+        if (-not $parent -or $parent -eq $current) { break }
+        $current = $parent
+    }
+    return $false
 }
 
 function Get-JarvisProtectedDirs {
@@ -252,21 +464,88 @@ function Get-JarvisProtectedDirs {
 }
 
 function Assert-JarvisSafeTarget {
-    # Lehnt Laufwerkswurzeln, Benutzerprofil, LOCALAPPDATA usw. (und deren Elternordner) ab.
+    # Lehnt Laufwerkswurzeln, Benutzerprofil, LOCALAPPDATA usw. (und deren Elternordner) ab - auch
+    # dann, wenn das Ziel nur ueber einen Link/Junction, ein subst-Laufwerk oder einen 8.3-Kurznamen
+    # dorthin zeigt. Netzwerk- und Geraetepfade (\\server\..., \\?\..., \\.\...) werden nicht angenommen.
     param([string]$Path)
     if (-not $Path) { throw 'Kein Zielordner angegeben.' }
+    if ($Path -match '^[\\/]{2}') {
+        throw ("Zielordner '{0}': Netzwerk- und Geraetepfade (\\server\..., \\?\..., \\.\...) werden nicht unterstuetzt - bitte einen lokalen Ordner angeben, z. B. %LOCALAPPDATA%\JARVIS." -f $Path)
+    }
     $full = Get-JarvisFullPath $Path
-    $root = [System.IO.Path]::GetPathRoot($full)
-    if ($full.Length -le $root.Length) {
-        throw ("Zielordner '{0}' ist ein Laufwerks-Stammverzeichnis - abgelehnt." -f $full)
+    $forms = New-Object System.Collections.Generic.List[string]
+    $forms.Add($full)
+    $physical = Resolve-JarvisPhysicalPath $full
+    if ($null -eq $physical) {
+        # Ohne Aufloesung (z. B. Add-Type gesperrt) keine Links im Zielpfad zulassen.
+        if (Test-JarvisPathHasLink $full) {
+            throw ("Zielordner '{0}' liegt in einem Link/Junction (oder ist selbst einer) - abgelehnt. Bitte einen normalen Ordner angeben." -f $full)
+        }
+    } elseif (-not (Test-JarvisSamePath $physical $full)) {
+        $forms.Add($physical)
+    }
+    foreach ($form in $forms) {
+        $root = [System.IO.Path]::GetPathRoot($form)
+        if ($form.Length -le $root.Length) {
+            throw ("Zielordner '{0}' ist ein Laufwerks-Stammverzeichnis (bzw. zeigt dorthin) - abgelehnt." -f $full)
+        }
     }
     foreach ($protected in @(Get-JarvisProtectedDirs)) {
-        if (Test-JarvisPathUnder -Path $protected -Root $full -AllowEqual) {
-            throw ("Zielordner '{0}' ist ein geschuetzter Ordner (bzw. enthaelt '{1}') - abgelehnt. " -f $full, $protected) +
-                'Bitte einen eigenen Unterordner verwenden, z. B. %LOCALAPPDATA%\JARVIS.'
+        $protectedForms = New-Object System.Collections.Generic.List[string]
+        $protectedForms.Add($protected)
+        $p = $null
+        try { $p = Resolve-JarvisPhysicalPath $protected } catch { $p = $null }
+        if ($p) { $protectedForms.Add($p) }
+        foreach ($form in $forms) {
+            foreach ($pf in $protectedForms) {
+                if (Test-JarvisPathUnder -Path $pf -Root $form -AllowEqual) {
+                    $shown = $full
+                    if ($form -ne $full) { $shown = '{0} (zeigt auf {1})' -f $full, $form }
+                    throw ("Zielordner '{0}' ist ein geschuetzter Ordner (bzw. enthaelt '{1}') - abgelehnt. " -f $shown, $protected) +
+                        'Bitte einen eigenen Unterordner verwenden, z. B. %LOCALAPPDATA%\JARVIS.'
+                }
+            }
         }
     }
     return $full
+}
+
+function Set-JarvisOwnerOnlyAcl {
+    # Nur Windows: Zugriff nur noch fuer den aktuellen Benutzer, SYSTEM und Administratoren (ohne Vererbung
+    # vom Elternordner; bei Ordnern fuer alles darin). Fuer Ziele ausserhalb des Benutzerprofils, wo sonst
+    # jeder angemeldete Benutzer secrets.yaml lesen und den Programmcode aendern koennte. Braucht keine
+    # Adminrechte (der Benutzer ist Besitzer) und aendert keine Systemeinstellung. $false = nicht moeglich.
+    param([string]$Path)
+    if (-not (Test-JarvisWindows)) { return $false }
+    $isDir = [System.IO.Directory]::Exists($Path)
+    if ($isDir) {
+        $item = New-Object System.IO.DirectoryInfo $Path
+        $acl = New-Object System.Security.AccessControl.DirectorySecurity
+        $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    } elseif ([System.IO.File]::Exists($Path)) {
+        $item = New-Object System.IO.FileInfo $Path
+        $acl = New-Object System.Security.AccessControl.FileSecurity
+        $inherit = [System.Security.AccessControl.InheritanceFlags]::None
+    } else {
+        return $false
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    $sids = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User,
+        (New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-18'),
+        (New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
+    foreach ($sid in $sids) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid,
+            [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit,
+            [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
+        $acl.AddAccessRule($rule)
+    }
+    # Direkt ueber .NET (schreibt nur die DACL); Set-Acl wuerde auch Besitzer/SACL anfassen wollen.
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+    } else {
+        $item.SetAccessControl($acl)
+    }
+    return $true
 }
 
 function Get-JarvisDefaultTarget {
@@ -295,12 +574,27 @@ function Test-JarvisDirNonEmpty {
 }
 
 function Test-JarvisLooksLikeJarvis {
-    # Alte Installation ohne Marker (z. B. von Hand kopiert)?
+    # Alte Installation ohne Marker (z. B. von Hand kopiert)? Nicht nur der Projektname "jarvis" (den
+    # tragen auch fremde Hobbyprojekte), sondern auch die eigenen Installer-Dateien muessen da sein.
     param([string]$Path)
+    foreach ($rel in @('scripts/installer-lib.ps1', 'app/setup_wizard.py', 'config.example.yaml')) {
+        if (-not [System.IO.File]::Exists((Join-JarvisRelPath $Path $rel))) { return $false }
+    }
     $pyproject = Join-Path $Path 'pyproject.toml'
     if (-not [System.IO.File]::Exists($pyproject)) { return $false }
     $text = [System.IO.File]::ReadAllText($pyproject)
     return ($text -match '(?m)^\s*name\s*=\s*"jarvis"\s*$')
+}
+
+function Get-JarvisForeignEntries {
+    # Namen im Zielordner, die weder Benutzerdaten von JARVIS noch der Installationsmarker sind.
+    param([string]$Path)
+    if (-not [System.IO.Directory]::Exists($Path)) { return @() }
+    $protected = @(Get-JarvisProtectedNames)
+    $marker = Get-JarvisMarkerName
+    return @([System.IO.Directory]::GetFileSystemEntries($Path) | ForEach-Object { [System.IO.Path]::GetFileName($_) } |
+            Where-Object { $_ -ne $marker -and ($protected -notcontains $_) -and -not (Test-JarvisUserDataFileName $_) } |
+            Sort-Object)
 }
 
 function Test-JarvisOnlyUserData {
@@ -321,6 +615,25 @@ function Assert-JarvisSourceFolder {
         if (-not [System.IO.File]::Exists((Join-JarvisRelPath $Source $rel))) {
             throw ("Quellordner unvollstaendig: '{0}' fehlt in {1}. Bitte das ZIP-Archiv komplett entpacken." -f $rel, $Source)
         }
+    }
+}
+
+function Get-JarvisRequiredProgramFiles {
+    # Ohne diese Dateien in der Dateiliste ist die Installation unbrauchbar.
+    return @('app/__main__.py', 'pyproject.toml', 'uv.lock', 'requirements.txt', 'scripts/installer-lib.ps1')
+}
+
+function Assert-JarvisProgramFileList {
+    # Sicherheitsnetz vor dem Kopieren: fehlen Pflichtdateien in der Liste, waren sie beim Lesen nicht
+    # greifbar (typisch: Quellordner in OneDrive, Dateien nur online bzw. als Platzhalter).
+    param([string[]]$Files, [string]$Source)
+    $have = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($f in @($Files)) { if ($f) { [void]$have.Add($f) } }
+    $missing = @(Get-JarvisRequiredProgramFiles | Where-Object { -not $have.Contains($_) })
+    if ($missing.Count -gt 0) {
+        throw (("Im Quellordner {0} fehlen Programmdateien ({1}). Liegt der Ordner in OneDrive (Dateien nur " +
+                'online bzw. als Platzhalter)? Bitte das ZIP z. B. nach C:\JARVIS-Setup entpacken (nicht in ' +
+                'Desktop/Dokumente unter OneDrive) und Install.cmd dort starten.') -f $Source, ($missing -join ', '))
     }
 }
 
@@ -351,13 +664,16 @@ function Test-JarvisUserDataFileName {
     return $false
 }
 
+function Get-JarvisMarkerTempName { return '.jarvis-install.json.tmp' }
+
 function Test-JarvisProtectedRelPath {
     param([string]$RelPath)
     $parts = @($RelPath -split '[\\/]')
-    $first = $parts[0]
+    # Wie Windows: Punkte/Leerzeichen am Ende zaehlen nicht ("config.yaml " = config.yaml).
+    $first = $parts[0].TrimEnd([char[]]@([char]'.', [char]' '))
     if ((Get-JarvisProtectedNames) -contains $first) { return $true }
     if ($parts.Count -eq 1 -and (Test-JarvisUserDataFileName $first)) { return $true }
-    return ($first -eq (Get-JarvisMarkerName))
+    return (@((Get-JarvisMarkerName), (Get-JarvisMarkerTempName)) -contains $first)
 }
 
 function Test-JarvisExcludedDir {
@@ -371,7 +687,7 @@ function Test-JarvisExcludedDir {
 
 function Test-JarvisExcludedFile {
     param([string]$Name, [bool]$IsTop)
-    if ($IsTop -and (@((Get-JarvisMarkerName), '.gitignore', '.gitattributes') -contains $Name)) { return $true }
+    if ($IsTop -and (@((Get-JarvisMarkerName), (Get-JarvisMarkerTempName), '.gitignore', '.gitattributes') -contains $Name)) { return $true }
     if ($IsTop -and (Test-JarvisUserDataFileName $Name)) { return $true }
     foreach ($pattern in @('*.pyc', '*.pyo')) {
         if ($Name -like $pattern) { return $true }
@@ -380,7 +696,8 @@ function Test-JarvisExcludedFile {
 }
 
 function Get-JarvisProgramFiles {
-    # Alle zu installierenden Dateien als relative Pfade mit '/' (sortiert). Links werden nie verfolgt.
+    # Alle zu installierenden Dateien als relative Pfade mit '/' (sortiert). Links/Junctions werden nie
+    # verfolgt; OneDrive-Platzhalter (auch ReparsePoint) sind normale Dateien und Ordner.
     param([Parameter(Mandatory = $true)][string]$Source)
     $src = Get-JarvisFullPath $Source
     $result = New-Object System.Collections.Generic.List[string]
@@ -391,7 +708,7 @@ function Get-JarvisProgramFiles {
         $dir = $src
         if ($rel) { $dir = Join-JarvisRelPath $src $rel }
         foreach ($entry in (New-Object System.IO.DirectoryInfo $dir).GetFileSystemInfos()) {
-            if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            if (Test-JarvisLinkLike $entry) { continue }
             $childRel = $entry.Name
             if ($rel) { $childRel = $rel + '/' + $entry.Name }
             $isTop = -not $rel
@@ -418,10 +735,15 @@ function Copy-JarvisProgramFiles {
         $from = Join-JarvisRelPath $src $rel
         $to = Join-JarvisRelPath $dst $rel
         if (-not (Test-JarvisPathUnder -Path $to -Root $dst)) { throw ("Pfad ausserhalb des Ziels: {0}" -f $rel) }
+        if (Test-JarvisHasLinkAncestor -Root $dst -Path $to) {
+            throw ("'{0}' liegt im Zielordner hinter einem Ordner-Link/Junction - der Installer schreibt nie ausserhalb des Installationsordners. Bitte den Link entfernen (oder durch einen normalen Ordner ersetzen) und Install.cmd erneut starten." -f $rel)
+        }
         $dir = [System.IO.Path]::GetDirectoryName($to)
         if (-not [System.IO.Directory]::Exists($dir)) { [void][System.IO.Directory]::CreateDirectory($dir) }
         $existing = New-Object System.IO.FileInfo $to
-        if ($existing.Exists -and $existing.IsReadOnly) { $existing.IsReadOnly = $false }
+        # Ein Datei-Link am Zielort wird ersetzt, nie durch ihn hindurch geschrieben.
+        if (Test-JarvisReparsePoint $to) { Remove-JarvisFileEntry $to }
+        elseif ($existing.Exists -and $existing.IsReadOnly) { $existing.IsReadOnly = $false }
         [System.IO.File]::Copy($from, $to, $true)
         $count++
     }
@@ -438,18 +760,22 @@ function Unblock-JarvisFiles {
 }
 
 function New-JarvisRemovalResult {
-    # Skipped = ungueltiger/fremder Pfad, Foreign = Verknuepfung einer anderen JARVIS-Installation.
+    # Removed = geloeschte Dateien (bzw. Verknuepfungen), RemovedDirs = danach leer geloeschte Ordner,
+    # Skipped = ungueltiger/fremder Pfad oder Pfad hinter einem Ordner-Link,
+    # Foreign = Verknuepfung einer anderen JARVIS-Installation.
     return [pscustomobject]@{
-        Removed = New-Object System.Collections.Generic.List[string]
-        Failed  = New-Object System.Collections.Generic.List[string]
-        Skipped = New-Object System.Collections.Generic.List[string]
-        Foreign = New-Object System.Collections.Generic.List[string]
+        Removed     = New-Object System.Collections.Generic.List[string]
+        RemovedDirs = New-Object System.Collections.Generic.List[string]
+        Failed      = New-Object System.Collections.Generic.List[string]
+        Skipped     = New-Object System.Collections.Generic.List[string]
+        Foreign     = New-Object System.Collections.Generic.List[string]
     }
 }
 
 function Add-JarvisRemovalResult {
     param($Into, $From)
     foreach ($x in $From.Removed) { $Into.Removed.Add($x) }
+    foreach ($x in $From.RemovedDirs) { $Into.RemovedDirs.Add($x) }
     foreach ($x in $From.Failed) { $Into.Failed.Add($x) }
     foreach ($x in $From.Skipped) { $Into.Skipped.Add($x) }
     foreach ($x in $From.Foreign) { $Into.Foreign.Add($x) }
@@ -491,7 +817,8 @@ function Remove-JarvisTree {
         return
     }
     foreach ($entry in $dir.GetFileSystemInfos()) {
-        $isEntryLink = (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        # Links/Junctions nur selbst entfernen; OneDrive-Platzhalter sind normale Ordner/Dateien.
+        $isEntryLink = Test-JarvisLinkLike $entry
         if ($entry -is [System.IO.DirectoryInfo]) {
             if ($isEntryLink) { Remove-JarvisLinkEntry $entry.FullName }
             else { Remove-JarvisTree -Path $entry.FullName -Root $Root }
@@ -511,6 +838,7 @@ function Remove-JarvisEmptyDirs {
     foreach ($d in $sorted) {
         if (-not (Test-JarvisPathUnder -Path $d -Root $Root)) { continue }
         if (-not [System.IO.Directory]::Exists($d) -or (Test-JarvisReparsePoint $d)) { continue }
+        if (Test-JarvisHasLinkAncestor -Root $Root -Path $d) { continue }
         $cache = Join-Path $d '__pycache__'
         if ([System.IO.Directory]::Exists($cache)) {
             try { Remove-JarvisTree -Path $cache -Root $Root } catch { $Result.Failed.Add(('{0} ({1})' -f $cache, (Get-JarvisErrorMessage $_))) }
@@ -518,7 +846,7 @@ function Remove-JarvisEmptyDirs {
         if ([System.IO.Directory]::GetFileSystemEntries($d).Length -eq 0) {
             try {
                 [System.IO.Directory]::Delete($d, $false)
-                $Result.Removed.Add($d)
+                $Result.RemovedDirs.Add($d)
             } catch {
                 $Result.Failed.Add(('{0} ({1})' -f $d, (Get-JarvisErrorMessage $_)))
             }
@@ -537,6 +865,8 @@ function Remove-JarvisRelativeFiles {
         if ((Test-JarvisProtectedRelPath $rel) -and -not $AllowProtected) { $result.Skipped.Add($rel); continue }
         $full = Join-JarvisRelPath $root $rel
         if (-not (Test-JarvisPathUnder -Path $full -Root $root)) { $result.Skipped.Add($rel); continue }
+        # Ein Ordner auf dem Weg ist ein Link/Junction: die Datei liegt in Wahrheit ausserhalb.
+        if (Test-JarvisHasLinkAncestor -Root $root -Path $full) { $result.Skipped.Add($rel); continue }
         $parent = [System.IO.Path]::GetDirectoryName($full)
         while ($parent -and (Test-JarvisPathUnder -Path $parent -Root $root)) {
             if (-not $dirs.Contains($parent)) { $dirs.Add($parent) }
@@ -665,7 +995,8 @@ function New-JarvisManifest {
         [string[]]$Files = @(),
         [string[]]$Shortcuts = @(),
         [string]$Autostart,
-        [string]$PythonEnv
+        [string]$PythonEnv,
+        [string[]]$Preexisting = @()
     )
     $m = [ordered]@{}
     $m['version'] = $Version
@@ -678,16 +1009,20 @@ function New-JarvisManifest {
     $m['venv'] = '.venv'
     $m['python_env'] = $null
     if ($PythonEnv) { $m['python_env'] = $PythonEnv }
+    # Benutzerdaten (config.yaml, secrets.yaml, state ...), die schon VOR der ersten Installation im
+    # Ordner lagen: Sie gehoeren nicht dem Installer und werden auch mit -Purge nie geloescht.
+    $m['preexisting'] = [string[]]@($Preexisting | Where-Object { $_ })
     return $m
 }
 
 function New-JarvisRemnantManifest {
     # Marker nach einer Deinstallation ohne -Purge: Programm, .venv und Verknuepfungen sind weg,
     # nur die Einstellungen des Benutzers (config.yaml, secrets.yaml, state\) bleiben. Der Rest-Marker
-    # belegt, dass sie zu JARVIS gehoeren: Ein spaeteres "uninstall.ps1 -Purge" darf sie dann loeschen,
-    # eine Neuinstallation uebernimmt sie. Er listet keine Dateien mehr.
+    # belegt, dass sie zu JARVIS gehoeren: Ein spaeteres "uninstall.ps1 -Purge" darf sie dann loeschen
+    # (ausser denen unter "preexisting"), eine Neuinstallation uebernimmt sie. Er listet keine Dateien mehr.
     param($Manifest)
-    $m = New-JarvisManifest -Version ([string]$Manifest.version) -Source ([string]$Manifest.source)
+    $m = New-JarvisManifest -Version ([string]$Manifest.version) -Source ([string]$Manifest.source) `
+        -Preexisting @(Get-JarvisManifestList $Manifest 'preexisting')
     if ($null -ne $Manifest.installed_at) { $m['installed_at'] = $Manifest.installed_at }
     $m['venv'] = $null
     $m['uninstalled_at'] = Get-JarvisTimestamp
@@ -713,9 +1048,29 @@ function Get-JarvisUserDataEntries {
 }
 
 function Write-JarvisManifest {
+    # Atomar: erst eine Zwischendatei im selben Ordner, dann in einem Schritt ersetzen - ein Abbruch
+    # mittendrin hinterlaesst nie einen halb geschriebenen Marker.
     param([string]$Target, $Manifest)
     $json = (ConvertTo-JarvisJson -Value $Manifest) + "`n"
-    [System.IO.File]::WriteAllText((Get-JarvisManifestPath $Target), $json, (New-Object System.Text.UTF8Encoding($false)))
+    $path = Get-JarvisManifestPath $Target
+    $tmp = Join-Path $Target (Get-JarvisMarkerTempName)
+    [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        if ([System.IO.File]::Exists($path)) {
+            try {
+                # NullString: ein $null wuerde PowerShell hier als "" uebergeben (= ungueltiger Sicherungspfad).
+                [System.IO.File]::Replace($tmp, $path, [System.Management.Automation.Language.NullString]::Value)
+            } catch {
+                # Manche Dateisysteme koennen kein Replace - dann loeschen und umbenennen.
+                [System.IO.File]::Delete($path)
+                [System.IO.File]::Move($tmp, $path)
+            }
+        } else {
+            [System.IO.File]::Move($tmp, $path)
+        }
+    } finally {
+        if ([System.IO.File]::Exists($tmp)) { try { [System.IO.File]::Delete($tmp) } catch { } }
+    }
 }
 
 function Read-JarvisManifest {
@@ -967,17 +1322,38 @@ function Get-JarvisPythonCandidates {
     return $list.ToArray()
 }
 
+function Test-JarvisStorePythonPath {
+    # Python aus dem Microsoft Store (MSIX-Paket): Schreibzugriffe nach %LOCALAPPDATA% landen dort in
+    # ...\Packages\PythonSoftwareFoundation.Python.3.x_...\LocalCache - eine .venv waere fuer den
+    # Installer (und Autostart/Startmenue) unsichtbar. Erkannt am gemeldeten Pfad (sys.executable bzw.
+    # sys.base_prefix), nicht am Aufrufnamen: Runtimes des neuen "Python install manager" liegen normal.
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    $cmp = [System.StringComparison]::OrdinalIgnoreCase
+    return ($Path.IndexOf('\WindowsApps\', $cmp) -ge 0 -or $Path.IndexOf('\Packages\PythonSoftwareFoundation.', $cmp) -ge 0)
+}
+
 function Find-JarvisPython {
-    # Erstes Python >= 3.11; liefert den echten Pfad (sys.executable) und die Version.
-    $code = 'import sys; print(sys.executable); print(sys.version_info[0] * 100 + sys.version_info[1])'
+    # Erstes Python >= 3.11 (ohne Microsoft-Store-Python); liefert den echten Pfad (sys.executable) und die Version.
+    $code = 'import sys; print(sys.executable); print(sys.base_prefix); print(sys.version_info[0] * 100 + sys.version_info[1])'
+    $storeSeen = New-Object System.Collections.Generic.List[string]
     foreach ($c in @(Get-JarvisPythonCandidates)) {
         $argList = @($c.Args) + @('-c', $code)
         $r = Invoke-JarvisCapture -FilePath $c.Exe -ArgumentList $argList -TimeoutSec 30
-        if ($r.ExitCode -ne 0 -or @($r.Output).Count -lt 2) { continue }
+        if ($r.ExitCode -ne 0 -or @($r.Output).Count -lt 3) { continue }
         $number = 0
         if (-not [int]::TryParse(([string]$r.Output[-1]).Trim(), [ref]$number)) { continue }
         if ($number -lt 311) { continue }
-        $exe = ([string]$r.Output[-2]).Trim()
+        $exe = ([string]$r.Output[-3]).Trim()
+        $base = ([string]$r.Output[-2]).Trim()
+        if ((Test-JarvisStorePythonPath $exe) -or (Test-JarvisStorePythonPath $base)) {
+            if (-not $storeSeen.Contains($exe)) {
+                $storeSeen.Add($exe)
+                Write-JarvisWarn (('Python aus dem Microsoft Store wird nicht verwendet ({0}): Windows legt dessen ' +
+                        'Dateien unter AppData in einen eigenen, fuer den Installer unsichtbaren Ordner.') -f $exe)
+            }
+            continue
+        }
         if (-not $exe) { $exe = $c.Exe }
         return [pscustomobject]@{ Path = $exe; Version = ('{0}.{1}' -f [math]::Floor($number / 100), ($number % 100)) }
     }
@@ -986,6 +1362,7 @@ function Find-JarvisPython {
 
 function Get-JarvisPipCommands {
     # Fallback ohne uv: python -m venv + pip mit Hash-Pruefung (requirements.txt aus uv export).
+    # Creates = Datei, die der Schritt anlegen muss (wird danach geprueft).
     param([string]$BasePython, [string]$Target)
     $venv = Get-JarvisVenvDir $Target
     $venvPython = Get-JarvisVenvPython -Target $Target
@@ -993,16 +1370,33 @@ function Get-JarvisPipCommands {
     $venvArgs = @('-m', 'venv', '--clear', $venv)
     $pipArgs = @('-m', 'pip', 'install', '--require-hashes', '--no-input', '--disable-pip-version-check', '-r', $requirements)
     return @(
-        [pscustomobject]@{ FilePath = $BasePython; ArgumentList = $venvArgs; Display = (Format-JarvisCommand $BasePython $venvArgs) },
-        [pscustomobject]@{ FilePath = $venvPython; ArgumentList = $pipArgs; Display = (Format-JarvisCommand $venvPython $pipArgs) }
+        [pscustomobject]@{ FilePath = $BasePython; ArgumentList = $venvArgs; Display = (Format-JarvisCommand $BasePython $venvArgs); Creates = $venvPython },
+        [pscustomobject]@{ FilePath = $venvPython; ArgumentList = $pipArgs; Display = (Format-JarvisCommand $venvPython $pipArgs); Creates = $null }
     )
 }
 
 function Get-JarvisNoPythonMessage {
     return ('Weder uv noch Python 3.11 (oder neuer) wurde gefunden. Zwei Moeglichkeiten: ' +
-        '(1) Install.cmd erneut starten und dem uv-Download zustimmen (oder Option -InstallUv). ' +
-        '(2) Python 3.11 oder neuer nur fuer den eigenen Benutzer installieren (python.org oder ' +
-        'Microsoft Store, keine Adminrechte noetig) und Install.cmd erneut starten.')
+        '(1) am einfachsten: Install.cmd erneut starten und dem uv-Download zustimmen (oder Option -InstallUv) - ' +
+        'uv bringt ein passendes Python mit. ' +
+        '(2) Python 3.11 oder neuer nur fuer den eigenen Benutzer installieren: python.org-Installer, auf der ' +
+        'ersten Seite den Haken bei "Use admin privileges when installing py.exe" entfernen, dann "Install Now" ' +
+        '(oder der "Python install manager" von python.org) - danach Install.cmd erneut starten. ' +
+        'Python aus dem Microsoft Store funktioniert hierfuer nicht.')
+}
+
+function Get-JarvisVenvHome {
+    # Ordner des Basis-Interpreters der venv (Eintrag "home" in .venv\pyvenv.cfg), sonst $null. Unter
+    # Windows lauscht dieser Interpreter (der venv-Starter in .venv\Scripts startet ihn als Kindprozess).
+    param([string]$Target)
+    $cfg = Join-Path (Get-JarvisVenvDir $Target) 'pyvenv.cfg'
+    if (-not [System.IO.File]::Exists($cfg)) { return $null }
+    try {
+        foreach ($line in [System.IO.File]::ReadAllLines($cfg, [System.Text.Encoding]::UTF8)) {
+            if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { return $Matches[1] }
+        }
+    } catch { }
+    return $null
 }
 
 function Initialize-JarvisPythonEnvironment {
@@ -1013,6 +1407,8 @@ function Initialize-JarvisPythonEnvironment {
         throw ("'{0}' ist ein Link/Junction. Bitte selbst entfernen - der Installer veraendert nichts ausserhalb des Installationsordners." -f $venv)
     }
     $uv = $null
+    $python = $null
+    $pythonChecked = $false
     if ($NoUv) {
         Write-JarvisInfo 'uv wird nicht verwendet (-NoUv).'
     } else {
@@ -1020,10 +1416,20 @@ function Initialize-JarvisPythonEnvironment {
         if ($uv) {
             Write-JarvisOk ('uv gefunden: {0} ({1})' -f $uv.Path, $uv.Version)
         } else {
+            # Erst nachsehen, ob es ohne uv ueberhaupt geht - dann ist die Frage ehrlich.
+            $python = Find-JarvisPython
+            $pythonChecked = $true
             $cmd = Get-JarvisUvInstallCommand
             Write-JarvisInfo 'uv wurde nicht gefunden. uv richtet Python und alle Pakete fuer JARVIS ein'
-            Write-JarvisInfo '(pro Benutzer nach %USERPROFILE%\.local\bin, ohne Adminrechte, PATH bleibt unveraendert).'
+            Write-JarvisInfo '(pro Benutzer nach %USERPROFILE%\.local\bin, ohne Adminrechte, PATH bleibt unveraendert;'
+            Write-JarvisInfo 'fehlt ein passendes Python, laedt uv es von GitHub nach %APPDATA%\uv\python).'
             Write-JarvisInfo ('Dazu wird der offizielle Installer von astral.sh geladen: ' + $cmd.Display)
+            if ($python) {
+                Write-JarvisOk ('Python {0} gefunden: {1} - uv ist optional (ohne uv: python -m venv + pip).' -f $python.Version, $python.Path)
+            } else {
+                Write-JarvisWarn 'Kein Python 3.11 (oder neuer) gefunden - ohne uv kann JARVIS hier nicht eingerichtet werden.'
+                Write-JarvisInfo 'Nein = abbrechen und Python selbst installieren (Hinweise folgen).'
+            }
             $consent = [bool]$InstallUv
             if (-not $consent) {
                 $consent = Read-JarvisYesNo 'uv jetzt herunterladen und installieren?' -Default $false -AssumeDefault:$AssumeYes
@@ -1036,13 +1442,16 @@ function Initialize-JarvisPythonEnvironment {
                 } else {
                     Write-JarvisWarn ('uv-Installation fehlgeschlagen (Exitcode {0}) - weiter mit python -m venv und pip.' -f $rc)
                 }
+            } elseif (-not $python) {
+                # Ohne uv und ohne Python geht es nicht - gleich mit klarer Anleitung aufhoeren.
+                throw (Get-JarvisNoPythonMessage)
             } else {
                 Write-JarvisInfo 'Kein Download - weiter mit python -m venv und pip (requirements.txt mit Hashes).'
             }
         }
     }
     if ($uv) {
-        Write-JarvisInfo 'uv sync --frozen --no-dev (Pakete aus uv.lock nach .venv; laedt bei Bedarf ein passendes Python) ...'
+        Write-JarvisInfo 'uv sync --frozen --no-dev (Pakete aus uv.lock nach .venv; fehlt ein passendes Python, laedt uv es von GitHub) ...'
         $rc = Invoke-JarvisUvSync -Uv $uv.Path -Target $Target
         if ($rc -eq 0 -and [System.IO.File]::Exists((Get-JarvisVenvPython -Target $Target))) {
             Write-JarvisOk 'Python-Umgebung mit uv eingerichtet.'
@@ -1054,7 +1463,7 @@ function Initialize-JarvisPythonEnvironment {
     if (-not [System.IO.File]::Exists($requirements)) {
         throw 'requirements.txt fehlt im Installationsordner - ohne uv koennen die Pakete nicht installiert werden.'
     }
-    $python = Find-JarvisPython
+    if (-not $pythonChecked) { $python = Find-JarvisPython }
     if (-not $python) { throw (Get-JarvisNoPythonMessage) }
     Write-JarvisOk ('Python {0} gefunden: {1}' -f $python.Version, $python.Path)
     foreach ($step in @(Get-JarvisPipCommands -BasePython $python.Path -Target $Target)) {
@@ -1065,6 +1474,12 @@ function Initialize-JarvisPythonEnvironment {
                     'Internetverbindung zu pypi.org, oder fuer Python {2} gibt es noch nicht alle Pakete als ' +
                     'fertigen Download. Abhilfe: Install.cmd erneut starten und dem uv-Download zustimmen ' +
                     '(uv nimmt ein passendes Python), oder Python 3.12 installieren.') -f $rc, $step.Display, $python.Version)
+        }
+        if ($step.Creates -and -not [System.IO.File]::Exists($step.Creates)) {
+            throw (("'{0}' wurde nicht angelegt, obwohl der Befehl erfolgreich war. Das passiert mit Python aus dem " +
+                    'Microsoft Store: Windows leitet dessen Schreibzugriffe nach AppData in einen eigenen Paketordner um. ' +
+                    'Abhilfe: Install.cmd erneut starten und dem uv-Download zustimmen, oder Python von python.org ' +
+                    'bzw. den "Python install manager" verwenden.') -f $step.Creates)
         }
     }
     Write-JarvisOk 'Python-Umgebung mit venv + pip eingerichtet.'
@@ -1232,12 +1647,13 @@ function New-JarvisStartMenuShortcuts {
     [void](New-JarvisUrlShortcut -Path $path -Url $LocalUrl)
     $created.Add($path)
 
-    $pythonw = Get-JarvisVenvPython -Target $Target -Windowed
-    $style = 1
-    if ([System.IO.Path]::GetFileName($pythonw) -ieq 'python.exe') { $style = 7 }
+    # Ueber scripts\start-hidden.ps1: startet den Server ohne Fenster, wartet auf /api/health, oeffnet
+    # die Oberflaeche und zeigt bei Problemen die letzten Log-Zeilen (statt still nichts zu tun).
+    $startScript = Join-Path (Join-Path $Target 'scripts') 'start-hidden.ps1'
     $path = Join-Path $dir $names.Start
-    [void](New-JarvisShortcut -Path $path -TargetPath $pythonw -Arguments '-m app' -WorkingDirectory $Target `
-        -Description 'JARVIS-Server starten (ohne Fenster)' -WindowStyle $style)
+    [void](New-JarvisShortcut -Path $path -TargetPath (Get-JarvisWindowsPowerShellPath) `
+        -Arguments (Get-JarvisScriptShortcutArguments -Script $startScript) -WorkingDirectory $Target `
+        -Description 'JARVIS-Server starten und die Oberflaeche oeffnen')
     $created.Add($path)
 
     $stopScript = Join-Path (Join-Path $Target 'scripts') 'stop.ps1'
@@ -1257,6 +1673,11 @@ function New-JarvisStartMenuShortcuts {
 function Get-JarvisStopShortcutArguments {
     param([string]$StopScript)
     return ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Pause' -f $StopScript)
+}
+
+function Get-JarvisScriptShortcutArguments {
+    param([string]$Script)
+    return ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $Script)
 }
 
 function New-JarvisAutostart {
@@ -1571,21 +1992,98 @@ function Get-JarvisServerLogHint {
     return (Join-Path $logs 'server-stderr.log')
 }
 
+function New-JarvisServerStartInfo {
+    # Windows: pythonw.exe -m app ohne Fenster (Fallback python.exe minimiert). ProcessStartInfo nimmt den
+    # Arbeitsordner woertlich - Start-Process -WorkingDirectory wuerde [ ] als Platzhalter auswerten.
+    param([string]$Target)
+    $exe = Get-JarvisVenvPython -Target $Target -Windowed
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '-m app'
+    $psi.WorkingDirectory = $Target
+    $psi.UseShellExecute = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    if ([System.IO.Path]::GetFileName($exe) -ieq 'python.exe') { $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Minimized }
+    return $psi
+}
+
 function Start-JarvisServer {
-    # Windows: pythonw.exe -m app ohne Fenster. Testmodus: venv-Python im Hintergrund mit Log-Dateien.
+    # Windows: pythonw.exe -m app ohne Fenster. Testmodus: venv-Python im Hintergrund mit Log-Dateien
+    # (ueber /bin/sh, damit Pfade mit [ ] woertlich bleiben und der Server die Ausgabe-Pipes des
+    # Installers nicht erbt).
     param([string]$Target)
     if (Test-JarvisWindows) {
-        $exe = Get-JarvisVenvPython -Target $Target -Windowed
-        $style = 'Hidden'
-        if ([System.IO.Path]::GetFileName($exe) -ieq 'python.exe') { $style = 'Minimized' }
-        return (Start-Process -FilePath $exe -ArgumentList '-m', 'app' -WorkingDirectory $Target -WindowStyle $style -PassThru)
+        return [System.Diagnostics.Process]::Start((New-JarvisServerStartInfo -Target $Target))
     }
     $exe = Get-JarvisVenvPython -Target $Target
     $logs = Join-Path (Join-Path $Target 'state') 'logs'
     if (-not [System.IO.Directory]::Exists($logs)) { [void][System.IO.Directory]::CreateDirectory($logs) }
-    return (Start-Process -FilePath $exe -ArgumentList '-m', 'app' -WorkingDirectory $Target -PassThru `
-            -RedirectStandardOutput (Join-Path $logs 'server-stdout.log') `
-            -RedirectStandardError (Join-Path $logs 'server-stderr.log'))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = '/bin/sh'
+    $psi.Arguments = ConvertTo-JarvisArgString @('-c', 'exec "$0" -m app <"/dev/null" >"$1" 2>"$2"', $exe,
+        (Join-Path $logs 'server-stdout.log'), (Join-Path $logs 'server-stderr.log'))
+    $psi.WorkingDirectory = $Target
+    $psi.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
+function Get-JarvisLogTail {
+    # Die letzten Zeilen einer Log-Datei (auch wenn der Server sie noch offen hat); leer, wenn es sie nicht gibt.
+    param([string]$Path, [int]$Lines = 10)
+    if (-not [System.IO.File]::Exists($Path)) { return @() }
+    try {
+        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+            $all = @($reader.ReadToEnd() -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
+        } finally {
+            $stream.Dispose()
+        }
+    } catch {
+        return @()
+    }
+    if ($all.Count -le $Lines) { return $all }
+    return @($all[($all.Count - $Lines)..($all.Count - 1)])
+}
+
+function Get-JarvisStartProblem {
+    # Uebersetzt typische Fehler aus dem Server-Log in einen Hinweis fuer Laien ($null = nichts erkannt).
+    param([string[]]$LogLines, [int]$Port)
+    $text = (@($LogLines) -join "`n")
+    if ($text -match 'Errno 10048|Errno 98|Errno 48|address already in use|Address already in use|only one usage of each socket address') {
+        return ('Port {0} ist belegt (ein anderes Programm oder eine alte JARVIS-Version). Abhilfe: das andere ' +
+            'Programm beenden - oder Install.cmd erneut starten, "Konfiguration jetzt anpassen?" mit j beantworten ' +
+            'und im letzten Schritt einen anderen Port waehlen.') -f $Port
+    }
+    if ($text -match 'JARVIS kann nicht starten') {
+        return 'config.yaml ist fehlerhaft (siehe Meldung oben). Datei korrigieren oder Install.cmd erneut starten.'
+    }
+    if ($text -match 'bereits \(PID') {
+        return 'JARVIS laeuft bereits (aus diesem Ordner) - Startmenue > JARVIS > JARVIS beenden, dann neu starten.'
+    }
+    return $null
+}
+
+function Get-JarvisOtherServers {
+    # Laufende "python -m app"-Prozesse, die NICHT zu diesem Ziel gehoeren (nur lesen). Liefert je Prozess
+    # PID und vermuteten Ordner (der Ordner ueber .venv bzw. der Programmpfad).
+    param([string]$Target)
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($d in @(Get-JarvisPythonProcessDetails)) {
+        if ([int]$d.Id -eq $PID) { continue }
+        if (-not (Test-JarvisServerCommandLine $d.CommandLine)) { continue }
+        if (Test-JarvisOwnServerProcess -Details $d -Target $Target -PidInfo $null) { continue }
+        $folder = $null
+        foreach ($exe in @($d.ParentPath, (Get-JarvisCommandLineExe $d.CommandLine), $d.Path)) {
+            if (-not $exe) { continue }
+            $idx = $exe.IndexOf('.venv', [System.StringComparison]::OrdinalIgnoreCase)
+            if ($idx -gt 1) { $folder = $exe.Substring(0, $idx - 1); break }
+        }
+        if (-not $folder) { $folder = [string]$d.Path }
+        $result.Add([pscustomobject]@{ Id = [int]$d.Id; Folder = $folder })
+    }
+    return $result.ToArray()
 }
 
 function Test-JarvisHealth {
@@ -1698,11 +2196,43 @@ function Get-JarvisTailscaleIp {
     return $null
 }
 
+function ConvertTo-JarvisPsLiteral {
+    # Wert fuer '...' in einem angezeigten PowerShell-Befehl (einfache Anfuehrungszeichen verdoppelt).
+    param([string]$Value)
+    return ("'" + $Value.Replace("'", "''") + "'")
+}
+
+function Get-JarvisFirewallBlockCleanup {
+    # Entfernt eingehende BLOCK-Regeln, die Windows beim ersten Start fuer Python anlegt, wenn im Dialog
+    # "Zugriff zulassen?" Abbrechen geklickt wird (oder ohne Adminrechte). Block-Regeln gehen vor
+    # Allow-Regeln - ohne das Aufraeumen hilft die Port-Regel nicht. Wird nur angezeigt, nie ausgefuehrt.
+    param([string]$PythonHome)
+    $pattern = '*\python*.exe'
+    if ($PythonHome) {
+        $pattern = [System.Management.Automation.WildcardPattern]::Escape($PythonHome.TrimEnd([char[]]@([char]'\', [char]'/'))) + '\python*.exe'
+    }
+    return ('Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -like {0} }} | Get-NetFirewallRule | ' +
+        "Where-Object {{ `$_.Direction -eq 'Inbound' -and `$_.Action -eq 'Block' }} | Remove-NetFirewallRule") -f (ConvertTo-JarvisPsLiteral $pattern)
+}
+
 function Get-JarvisFirewallCommands {
-    # Dieselben Regeln wie in README Abschnitt 5 - werden nur angezeigt, nie ausgefuehrt.
-    param([int]$Port = 8765)
+    # Dieselben Befehle wie in README Abschnitt 5 - werden nur angezeigt, nie ausgefuehrt.
+    # -PythonHome: Ordner des Python, das JARVIS wirklich ausfuehrt (aus .venv\pyvenv.cfg).
+    param([int]$Port = 8765, [string]$PythonHome)
     return @(
         ('New-NetFirewallRule -DisplayName "JARVIS {0} (LAN)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {0} -Profile Private -RemoteAddress LocalSubnet' -f $Port),
-        ('New-NetFirewallRule -DisplayName "JARVIS {0} (Tailscale)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {0} -InterfaceAlias "Tailscale" -RemoteAddress 100.64.0.0/10' -f $Port)
+        ('New-NetFirewallRule -DisplayName "JARVIS {0} (Tailscale)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {0} -InterfaceAlias "Tailscale" -RemoteAddress 100.64.0.0/10' -f $Port),
+        (Get-JarvisFirewallBlockCleanup -PythonHome $PythonHome)
     )
+}
+
+function Get-JarvisPublicNetworks {
+    # Nur lesen: Namen der Netzwerke mit Profil "Oeffentlich" (dort greift die LAN-Regel nicht). Nur Windows.
+    if (-not (Test-JarvisWindows)) { return @() }
+    try {
+        return @(Get-NetConnectionProfile -ErrorAction Stop | Where-Object { [string]$_.NetworkCategory -eq 'Public' } |
+                ForEach-Object { '{0} ({1})' -f $_.Name, $_.InterfaceAlias })
+    } catch {
+        return @()
+    }
 }
