@@ -1,0 +1,55 @@
+# Baut das Installer-ZIP und veröffentlicht es als GitHub-Release, sobald ein Versions-Tag
+# (z. B. v0.2.0) gepusht wird. Der Tag muss zur Version in jarvis/pyproject.toml passen.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag gegen pyproject.toml prüfen
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('jarvis/pyproject.toml','rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in jarvis/pyproject.toml"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Installer-ZIP bauen
+        run: |
+          # Fester Zeitstempel = Zeit des Tag-Commits, damit das ZIP reproduzierbar ist.
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          python3 jarvis/scripts/build_installer.py --out dist
+
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          **JARVIS $VERSION – Installer für Windows** (pro Benutzer, ohne Adminrechte)
+
+          **Installation**
+          1. \`JARVIS-Setup-$VERSION.zip\` herunterladen, Rechtsklick › Eigenschaften › „Zulassen“.
+          2. Entpacken, z. B. nach \`C:\\JARVIS-Setup\` (nicht in einen OneDrive-Ordner wie Desktop/Dokumente).
+          3. \`Install.cmd\` doppelklicken – **nicht** als Administrator. Bei der SmartScreen-Warnung „Weitere Informationen“ › „Trotzdem ausführen“.
+          4. Den API-Token aus Schritt 6 notieren (steht auch in \`%LOCALAPPDATA%\\JARVIS\\secrets.yaml\`).
+          5. Die Firewall-Befehle aus der Zusammenfassung selbst in einer Admin-PowerShell ausführen.
+
+          Prüfsumme: \`JARVIS-Setup-$VERSION.zip.sha256\` (PowerShell: \`Get-FileHash .\\JARVIS-Setup-$VERSION.zip\`).
+
+          ⚠️ Vorabversion: bisher nur unter Linux mit PowerShell 7 getestet, noch nicht auf echtem Windows.
+          Niemals Port 8765 im Router freigeben – von unterwegs nur über Tailscale.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/JARVIS-Setup-$VERSION.zip" "dist/JARVIS-Setup-$VERSION.zip.sha256" \
+            --title "JARVIS $VERSION" --notes-file notes.md --prerelease --verify-tag
