@@ -205,7 +205,7 @@ def test_install_update_uninstall_end_to_end(tmp_path: Path) -> None:
 
         # c) Installation prüfen.
         assert proc.returncode == 0, out
-        assert "[10/10]" in out, out
+        assert "[11/11]" in out, out
         manifest = json.loads((target / ".jarvis-install.json").read_text(encoding="utf-8"))
         installed = sorted(manifest["files"])
         assert installed == packaged, "Manifest listet genau die Dateien des Pakets"
@@ -282,3 +282,92 @@ def test_install_update_uninstall_end_to_end(tmp_path: Path) -> None:
     finally:
         # f) Nie einen Server zurücklassen.
         _kill_leftovers(target, seen_pids)
+
+
+def _has_whisper(target: Path) -> bool:
+    probe = subprocess.run(
+        [str(target / ".venv" / "bin" / "python"), "-c",
+         "import importlib.util as u; print(u.find_spec('faster_whisper') is not None)"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert probe.returncode == 0, probe.stderr
+    return probe.stdout.strip() == "True"
+
+
+def _set_stt(target: Path, enabled: bool) -> None:
+    path = target / "config.yaml"
+    text = path.read_text(encoding="utf-8")
+    new, n = re.subn(r"(?m)^(\s+stt:\s*\n\s+enabled:\s*)(true|false)", rf"\g<1>{'true' if enabled else 'false'}", text)
+    assert n == 1, "voice.stt.enabled nicht gefunden"
+    path.write_text(new, encoding="utf-8", newline="\n")
+
+
+def _extras(target: Path) -> list[str]:
+    return json.loads((target / ".jarvis-install.json").read_text(encoding="utf-8"))["python_extras"]
+
+
+def test_voice_extra_install_keep_remove_end_to_end(tmp_path: Path) -> None:
+    """Spracheingabe: Zusatzpaket nur nach Zustimmung (-InstallVoice), bleibt bei Updates, entfällt nach dem Ausschalten.
+
+    Das Whisper-Modell wird nie geladen (HF_HUB_OFFLINE=1): Der Download-Versuch scheitert, die Installation
+    läuft trotzdem durch (Warnung). Die Pakete des Extras "voice" darf uv von pypi.org laden.
+    """
+    pwsh = _pwsh()
+    if not pwsh:
+        pytest.skip("pwsh nicht gefunden (Umgebungsvariable JARVIS_PWSH setzen oder pwsh in den PATH)")
+    uv = shutil.which("uv")
+    if not uv:
+        pytest.skip("uv nicht im PATH")
+    env = _env(uv)
+    env["HF_HUB_OFFLINE"] = "1"  # nie ein Whisper-Modell aus dem Internet holen
+    package = _build_and_extract(tmp_path)
+    assert (package / "requirements-voice.txt").is_file(), "pip-Weg der Spracheingabe im Paket"
+    script = package / "scripts" / "install.ps1"
+    target = tmp_path / "JARVIS"
+    args = ["-Target", str(target), "-Yes", "-NoAutostart", "-NoShortcuts", "-NoStart", "-AllowNonWindows"]
+
+    # 1) Neuinstallation: Spracheingabe ist aus (Vorgabe) -> nichts zusätzlich geladen.
+    proc = _run(pwsh, script, args, env, tmp_path)
+    out = _output(proc)
+    assert proc.returncode == 0, out
+    assert "[7/11] Spracheingabe (optional)" in out and "Spracheingabe ist aus" in out, out
+    assert _extras(target) == [] and not _has_whisper(target)
+
+    # 2) Eingeschaltet, aber -Yes ohne -InstallVoice: keine Zustimmung -> nichts laden.
+    _set_stt(target, True)
+    proc = _run(pwsh, script, args, env, tmp_path)
+    out = _output(proc)
+    assert proc.returncode == 0, out
+    assert "mit -Yes wird nichts geladen; dafuer -InstallVoice" in out, out
+    assert _extras(target) == [] and not _has_whisper(target)
+
+    # 3) Mit -InstallVoice: Paket per uv sync --extra voice; Modell-Download scheitert (offline) -> nur Warnung.
+    proc = _run(pwsh, script, [*args, "-InstallVoice"], env, tmp_path)
+    out = _output(proc)
+    assert proc.returncode == 0, out
+    assert "uv sync --frozen --no-dev --extra voice" in out, out
+    assert "Zusatzpaket faster-whisper installiert" in out, out
+    assert "Download des Whisper-Modells fehlgeschlagen" in out, out
+    assert "Spracheingabe an, aber das Whisper-Modell fehlt" in out, out
+    assert _extras(target) == ["voice"] and _has_whisper(target)
+    assert not any((target / "state").rglob("model.bin")), "kein Modell geladen"
+
+    # 4) Update mit -Yes: das Paket bleibt (uv sync mit --extra voice), kein neuer Download-Versuch.
+    proc = _run(pwsh, script, args, env, tmp_path)
+    out = _output(proc)
+    assert proc.returncode == 0, out
+    assert "uv sync --frozen --no-dev --extra voice" in out, out
+    assert "Download des Whisper-Modells" not in out and "Whisper-Modell \"small\" jetzt herunterladen? -> nein" in out
+    assert _extras(target) == ["voice"] and _has_whisper(target)
+
+    # 5) Spracheingabe aus: dieser Lauf vermerkt es, der nächste entfernt das Paket.
+    _set_stt(target, False)
+    proc = _run(pwsh, script, args, env, tmp_path)
+    out = _output(proc)
+    assert proc.returncode == 0, out
+    assert "entfaellt beim naechsten Install.cmd-Lauf" in out, out
+    assert _extras(target) == []
+    proc = _run(pwsh, script, args, env, tmp_path)
+    assert proc.returncode == 0, _output(proc)
+    assert not _has_whisper(target), "Zusatzpaket nach dem Ausschalten entfernt"
+    assert (target / "config.yaml").is_file() and (target / "secrets.yaml").is_file()

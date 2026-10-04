@@ -2,7 +2,9 @@
 
 Genutzt werden ausschließlich lesende Endpunkte:
   GET  /api/tags  – installierte Modelle mit Größe
-  POST /api/show  – Details eines Modells, Feld "capabilities" (muss "tools" enthalten)
+  POST /api/show  – Details eines Modells, Feld "capabilities": "tools" = kann Tool-Aufrufe (Chat-Modell
+                    llm.model), "vision" = versteht Bilder (Bildschirm beschreiben, vision.model). Laut
+                    Ollama-Doku docs/api.md, Beispielantwort für llava: capabilities ["completion", "vision"].
 Es wird nie ein Modell gezogen, gelöscht oder geladen.
 """
 
@@ -26,6 +28,10 @@ class ModelInfo:
     @property
     def supports_tools(self) -> bool:
         return "tools" in self.capabilities
+
+    @property
+    def supports_vision(self) -> bool:
+        return "vision" in self.capabilities
 
     @property
     def size_gb(self) -> float:
@@ -98,3 +104,8 @@ def _capabilities(client: httpx.Client, base: str, name: str, kwargs: dict) -> t
 def tool_models(models: list[ModelInfo]) -> list[ModelInfo]:
     """Nur Modelle mit capability "tools", kleinstes zuerst (bei gleicher Größe nach Name)."""
     return sorted((m for m in models if m.supports_tools), key=lambda m: (m.size, m.name))
+
+
+def vision_models(models: list[ModelInfo]) -> list[ModelInfo]:
+    """Nur Modelle mit capability "vision" (verstehen Bilder), kleinstes zuerst (bei gleicher Größe nach Name)."""
+    return sorted((m for m in models if m.supports_vision), key=lambda m: (m.size, m.name))

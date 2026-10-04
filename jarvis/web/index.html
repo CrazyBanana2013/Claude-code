@@ -75,14 +75,41 @@
   .status:hover .pill { border-color: var(--line-2); }
 
   /* ---------- Befehlsleiste (Daumenzone) ---------- */
-  .cmd {
+  /* Rahmen = Lage der Leiste; #cmd füllt ihn ganz aus (das HUD-Layout misst #cmd), das Mikrofon liegt rechts darüber */
+  .cmdbar {
+    --micw: 52px;
     position: fixed; z-index: 5; left: calc(var(--sal) + 12px); right: calc(var(--sar) + 12px); bottom: calc(var(--sab) + 10px);
-    height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 14px; cursor: pointer; text-align: left;
+    height: 52px; transition: right .45s cubic-bezier(.2, .8, .2, 1), opacity .5s;
+  }
+  .cmd {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+    display: flex; align-items: center; gap: 10px; padding: 0 calc(var(--micw) + 10px) 0 14px; cursor: pointer; text-align: left;
     border: 1px solid rgba(var(--cy-rgb), .42); border-radius: 3px; color: var(--text);
     background: linear-gradient(180deg, rgba(6, 30, 45, .94), rgba(2, 12, 20, .96));
     box-shadow: 0 0 22px rgba(var(--cy-rgb), .12), inset 0 1px 0 rgba(var(--cy-rgb), .25);
-    transition: right .45s cubic-bezier(.2, .8, .2, 1), opacity .5s;
   }
+  .mic {
+    position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; width: var(--micw); margin: 0; padding: 0; cursor: pointer;
+    display: grid; place-items: center; color: var(--cy); background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0 3px 3px 0;
+  }
+  .mic:hover { background: rgba(var(--cy-rgb), .12); }
+  .mic:focus-visible { outline: 2px solid var(--cy); outline-offset: -3px; }
+  /* Mikrofon-Symbol (Leiste und Befehl-Panel): Schrägstrich = hier nicht verfügbar, rot pulsierend = Aufnahme läuft */
+  .micico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px rgba(var(--cy-rgb), .7)); overflow: visible; }
+  button.b.icon svg.micico { width: 20px; height: 20px; }
+  .micico .sl { display: none; stroke: var(--warn); }
+  [data-mic].na { color: var(--muted); }
+  [data-mic].na .micico { filter: none; }
+  [data-mic].na .micico .sl { display: inline; }
+  [data-mic].rec { color: #ffd0d5; background: rgba(255, 93, 108, .2); }
+  button.b[data-mic].rec { border-color: var(--bad); box-shadow: 0 0 14px rgba(255, 93, 108, .45); }
+  [data-mic].rec .micico { filter: drop-shadow(0 0 5px rgba(255, 93, 108, .9)); }
+  button.b[data-mic] { position: relative; }
+  [data-mic].rec::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+    border: 2px solid var(--bad); pointer-events: none; animation: micpulse 1.2s ease-out infinite;
+  }
+  @keyframes micpulse { from { transform: scale(.7); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
   .cmd::before {
     content: ""; position: absolute; inset: 3px; pointer-events: none; --b: rgba(var(--cy-rgb), .9);
     background:
@@ -96,6 +123,7 @@
   .cmd-line .prompt { color: var(--cy); font-weight: 700; }
   .cmd-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmd-text.hint { color: #a9c9d6; }
+  .cmd-text.live { color: #ffd0d5; }
   .caret { flex: none; width: 7px; height: 15px; background: var(--cy); box-shadow: 0 0 6px var(--cy); animation: blink 1.1s steps(2, start) infinite; }
   @keyframes blink { to { visibility: hidden; } }
   .cmd-src { flex: none; font: 600 10px/1 var(--mono); letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
@@ -202,6 +230,8 @@
     content: ""; position: absolute; left: 50%; top: 0; width: 120px; height: 3px; transform: translateX(-50%); z-index: 2;
     background: var(--cy); box-shadow: 0 0 12px var(--cy); clip-path: polygon(0 0, 100% 0, calc(100% - 3px) 100%, 3px 100%);
   }
+  /* Panel blendet gerade aus: Tipps gehen schon durch (sonst verschluckt das abgleitende Sheet den nächsten Knoten-Tipp) */
+  .panel:not(.open) { pointer-events: none; }
   .panel .scan {
     position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 3; pointer-events: none; opacity: 0;
     background: linear-gradient(90deg, transparent, rgba(220, 252, 255, .9), transparent); box-shadow: 0 0 14px rgba(var(--cy-rgb), .9);
@@ -231,9 +261,9 @@
   body.m-dock .panel.chat { height: calc(100vh - var(--sat) - 96px); }
   body.m-center .panel { left: var(--pl, 20%); width: var(--pw, 60%); top: var(--pt, 52px); max-height: var(--ph, 80vh); }
   body.m-center .panel.chat { height: var(--ph, 80vh); }
-  body.m-dock .cmd { right: max(calc(var(--sar) + 12px), calc((100% - 760px) / 2)); left: max(calc(var(--sal) + 12px), calc((100% - 760px) / 2)); }
-  body.panel-open.m-center .cmd, body.panel-open.m-sheet .cmd { opacity: 0; pointer-events: none; }
-  body.panel-open.m-dock .cmd { right: calc(var(--sar) + var(--dockw) + 48px); left: max(calc(var(--sal) + 12px), calc((100% - var(--dockw) - 44px - 760px) / 2)); }
+  body.m-dock .cmdbar { right: max(calc(var(--sar) + 12px), calc((100% - 760px) / 2)); left: max(calc(var(--sal) + 12px), calc((100% - 760px) / 2)); }
+  body.panel-open.m-center .cmdbar, body.panel-open.m-sheet .cmdbar { opacity: 0; pointer-events: none; }
+  body.panel-open.m-dock .cmdbar { right: calc(var(--sar) + var(--dockw) + 48px); left: max(calc(var(--sal) + 12px), calc((100% - var(--dockw) - 44px - 760px) / 2)); }
 
   .p-head {
     position: relative; flex: none; display: flex; align-items: flex-start; gap: 10px;
@@ -382,6 +412,38 @@
     border: 1px solid rgba(255, 93, 108, .35); background: rgba(255, 93, 108, .06); border-radius: 3px; font-size: 14px;
   }
   .warnbox svg { width: 30px; height: 30px; flex: none; fill: none; stroke: var(--bad); stroke-width: 1.7; stroke-linecap: round; filter: drop-shadow(0 0 5px rgba(255, 93, 108, .7)); }
+  .vol { display: flex; align-items: center; gap: 10px; }
+  .vol input[type=range] { flex: 1; min-width: 0; }
+  /* Wert noch unbekannt (vor dem ersten Lesen): Regler gedämpft statt einer erfundenen Stellung */
+  input[type=range].unk { opacity: .45; }
+  #vol-mute[aria-pressed="true"] { border-color: var(--warn); color: var(--warn); background: rgba(255, 196, 87, .12); box-shadow: 0 0 10px rgba(255, 196, 87, .25); }
+  #vol-mute .m, #vol-mute[aria-pressed="true"] .w { display: none; }
+  #vol-mute[aria-pressed="true"] .m { display: inline; }
+  .media { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .media button.b.icon { width: 100%; }
+  .media button.b.icon svg { width: 20px; height: 20px; }
+  button.b.wide { width: 100%; }
+  /* Programme: passt der Name nicht neben die Knöpfe (schmale Liste), stehen die Knöpfe darunter */
+  #apps { container-type: inline-size; }
+  .app { flex-wrap: wrap; row-gap: 10px; }
+  .app .grow { flex: 1 1 90px; }
+  .app .acts { flex: none; display: flex; gap: 8px; margin-left: auto; }
+  @container (max-width: 349px) {
+    .app .acts { flex: 1 1 100%; }
+    .app .acts button.b:not(.icon) { flex: 1; }
+  }
+  .warn-t { color: #ffe2a8; }
+  .sec.scr { container-type: inline-size; }
+  @container (max-width: 330px) { #screen-form { flex-wrap: wrap; } #screen-form button { flex: 1 1 100%; } }
+  .desk-note { margin: 0 0 14px; padding: 9px 12px; font-size: 13px; color: #ffe2a8; border: 1px solid rgba(255, 196, 87, .35); border-left: 3px solid var(--warn); background: rgba(255, 196, 87, .06); border-radius: 2px; }
+  .desc {
+    margin-top: 10px; padding: 10px 12px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+    border: 1px solid var(--line); border-left: 2px solid var(--cy); background: rgba(2, 14, 22, .88); border-radius: 3px;
+  }
+  .desc .dm { margin-top: 7px; font: 11px/1.3 var(--mono); color: var(--muted); white-space: normal; }
+  .desc.err { border-color: rgba(255, 93, 108, .5); border-left-color: var(--bad); color: #ffc6cc; }
+  .desc.wait { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+  .desc.wait::after { content: ""; display: inline-block; width: 7px; height: 13px; margin-left: 6px; vertical-align: -2px; background: var(--cy); box-shadow: 0 0 6px var(--cy); animation: blink 1.1s steps(2, start) infinite; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; font-size: 14px; }
   .kv dt { font: 700 10px/1.9 var(--hud); letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
   .kv dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
@@ -397,6 +459,32 @@
   .tc { border: 1px solid var(--line); border-radius: 2px; padding: 1px 6px; }
   .tc.ok { border-color: rgba(65, 227, 155, .45); color: var(--ok); }
   .tc.bad { border-color: rgba(255, 93, 108, .5); color: var(--bad); }
+  /* Transkript: am PC gesprochene Antworten und per Mikrofon erkannte Eingaben */
+  .mk { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid rgba(var(--cy-rgb), .45); border-radius: 2px; color: var(--cy-2); }
+  .mk.sp { border-color: rgba(65, 227, 155, .45); color: var(--ok); }
+  .mk svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .msg.bot.spoken { border-left-color: var(--ok); }
+  .msg.me.voice { border-style: dashed; }
+  .meta.me { justify-content: flex-end; }
+  /* „PC spricht“: Schalter im Kopf des Befehl-Panels (gedrückt = Antworten am PC vorlesen) */
+  button.b.tog {
+    flex: none; display: inline-flex; align-items: center; gap: 7px; margin-top: -4px; padding: 0 11px; letter-spacing: .1em; font-size: 12px;
+    color: var(--muted); background: rgba(2, 14, 22, .7); border-color: var(--line-2);
+  }
+  button.b.tog svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  button.b.tog .on { display: none; }
+  button.b.tog[aria-pressed="true"] { color: #fff; border-color: var(--cy); background: rgba(var(--cy-rgb), .2); box-shadow: inset 0 0 12px rgba(var(--cy-rgb), .25), 0 0 10px rgba(var(--cy-rgb), .2); }
+  button.b.tog[aria-pressed="true"] .on { display: inline; }
+  button.b.tog[aria-pressed="true"] .off { display: none; }
+  button.b.tog.na { color: var(--muted); border-style: dashed; box-shadow: none; background: rgba(2, 14, 22, .7); }
+  .panel.chat .p-head h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* schmale Panels: Schalter nur als Symbol (Beschriftung bleibt als aria-label) */
+  .panel.chat { container-type: inline-size; }
+  @container (max-width: 370px) {
+    button.b.tog .tl { display: none; } button.b.tog { width: 44px; padding: 0; justify-content: center; }
+    form.send button.b.primary { padding: 0 12px; letter-spacing: .06em; }
+  }
+  @media (max-width: 350px) { button.b.tog .tl { display: none; } button.b.tog { width: 44px; padding: 0; justify-content: center; } }
   .suggest { flex: none; margin: 4px 0 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   .suggest button.chip { font-size: 12.5px; padding: 0 10px; }
   form.send { flex: none; display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -466,8 +554,8 @@
   }
   /* Handy quer: kompakte Kopf- und Befehlsleiste */
   body.m-center .bar { padding-top: calc(var(--sat) + 6px); padding-bottom: 6px; }
-  body.m-center .cmd { height: 44px; bottom: calc(var(--sab) + 6px); left: var(--cl, calc(var(--sal) + 12px)); right: var(--cr, calc(var(--sar) + 12px)); }
-  .cmd.narrow { gap: 8px; padding: 0 12px; }
+  body.m-center .cmdbar { --micw: 48px; height: 44px; bottom: calc(var(--sab) + 6px); left: var(--cl, calc(var(--sal) + 12px)); right: var(--cr, calc(var(--sar) + 12px)); }
+  .cmd.narrow { gap: 8px; padding: 0 calc(var(--micw) + 8px) 0 12px; }
   .cmd.narrow .cmd-code, .cmd.narrow .cmd-src { display: none; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -505,11 +593,14 @@
   </button>
 </main>
 
-<button class="cmd" id="cmd" type="button" data-panel="chat" aria-controls="panel-chat" aria-expanded="false" aria-label="Befehl eingeben" aria-describedby="cmd-text">
-  <span class="cmd-code" aria-hidden="true">CMD</span>
-  <span class="cmd-line"><span class="prompt" aria-hidden="true">›</span><span class="cmd-text hint" id="cmd-text">Befehl an JARVIS …</span><span class="caret" aria-hidden="true"></span></span>
-  <span class="cmd-src" id="cmd-src" aria-hidden="true">–</span>
-</button>
+<div class="cmdbar" id="cmdbar">
+  <button class="cmd" id="cmd" type="button" data-panel="chat" aria-controls="panel-chat" aria-expanded="false" aria-label="Befehl eingeben" aria-describedby="cmd-text">
+    <span class="cmd-code" aria-hidden="true">CMD</span>
+    <span class="cmd-line"><span class="prompt" aria-hidden="true">›</span><span class="cmd-text hint" id="cmd-text">Befehl an JARVIS …</span><span class="caret" aria-hidden="true"></span></span>
+    <span class="cmd-src" id="cmd-src" aria-hidden="true">–</span>
+  </button>
+  <button class="mic" id="mic" type="button" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
+</div>
 
 <!-- ===== Licht ===== -->
 <section class="panel" id="panel-licht" role="dialog" aria-modal="false" aria-labelledby="h-licht" hidden>
@@ -605,20 +696,54 @@
   <div class="scan" aria-hidden="true"></div>
   <header class="p-head">
     <div class="p-tt">
-      <div class="p-code">Modul 04 · Energie</div>
+      <div class="p-code">Modul 04 · Steuerung</div>
       <h2 id="h-pc">PC</h2>
       <span id="pc-state" class="p-state" aria-live="polite"></span>
     </div>
     <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </header>
   <div class="p-body">
-    <div class="warnbox"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
-      <span>Herunterfahren startet erst nach Bestätigung (15 s Vorlauf).</span></div>
-    <div class="two">
-      <button class="b danger" type="button" id="shutdown">Herunterfahren</button>
-      <button class="b" type="button" id="shutdown-cancel" data-tool="pc_shutdown_cancel">Abbrechen</button>
+    <p class="desk-note" id="desk-note" hidden></p>
+    <div class="sec">
+      <div class="lbl"><span>Lautstärke</span><span class="r" id="vol-val">–</span></div>
+      <div class="vol">
+        <button class="b icon" type="button" id="vol-mute" aria-pressed="false" aria-label="Ton aus" title="Ton aus/an"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="w" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="m" d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg></button>
+        <input id="vol" class="unk" type="range" min="0" max="100" step="1" value="50" aria-label="Lautstärke" aria-describedby="vol-val">
+      </div>
     </div>
-    <p class="note">„Abbrechen“ stoppt ein bereits geplantes Herunterfahren.</p>
+    <div class="sec">
+      <div class="lbl"><span>Medien</span></div>
+      <div class="media">
+        <button class="b icon" type="button" data-media="previous" aria-label="Vorheriger Titel" title="Vorheriger Titel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6l-9 6 9 6z"/></svg></button>
+        <button class="b icon" type="button" data-media="play_pause" aria-label="Wiedergabe / Pause" title="Wiedergabe / Pause"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l8 6-8 6zM15 6v12M20 6v12"/></svg></button>
+        <button class="b icon" type="button" data-media="next" aria-label="Nächster Titel" title="Nächster Titel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l9 6-9 6z"/></svg></button>
+        <button class="b icon" type="button" data-media="stop" aria-label="Wiedergabe stoppen" title="Stopp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5h11v11h-11z"/></svg></button>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Programme</span><span class="r" id="apps-count"></span></div>
+      <div class="scripts" id="apps"><span class="label">Lade …</span></div>
+    </div>
+    <div class="sec scr">
+      <div class="lbl"><span>Bildschirm</span></div>
+      <form class="inline" id="screen-form" autocomplete="off">
+        <input type="text" id="screen-q" maxlength="300" placeholder="Frage (optional)" aria-label="Frage zum Bildschirm (optional)">
+        <button class="b" type="submit" id="screen-go" aria-label="Bildschirm beschreiben">Beschreiben</button>
+      </form>
+      <div class="desc" id="screen-desc" aria-live="polite" hidden></div>
+      <p class="note" id="screen-note">Das Bildschirmfoto geht nur an das lokale Vision-Modell und wird nicht gespeichert.</p>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Sitzung · Energie</span></div>
+      <button class="b wide" type="button" id="lock" data-tool="desktop_lock">PC sperren</button>
+      <div class="warnbox" style="margin-top:12px"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+        <span>Herunterfahren startet erst nach Bestätigung (15 s Vorlauf).</span></div>
+      <div class="two">
+        <button class="b danger" type="button" id="shutdown">Herunterfahren</button>
+        <button class="b" type="button" id="shutdown-cancel" data-tool="pc_shutdown_cancel">Abbrechen</button>
+      </div>
+      <p class="note">„Abbrechen“ stoppt ein bereits geplantes Herunterfahren.</p>
+    </div>
   </div>
 </section>
 
@@ -639,6 +764,9 @@
       <dt>LLM</dt><dd id="sys-llm">–</dd>
       <dt>Modell</dt><dd id="sys-model">–</dd>
       <dt>Hinweis</dt><dd id="sys-note">–</dd>
+      <dt>Stimme</dt><dd id="sys-tts">–</dd>
+      <dt>Mikrofon</dt><dd id="sys-stt">–</dd>
+      <dt>Bildschirm</dt><dd id="sys-vision">–</dd>
     </dl>
     <div class="sec two" style="margin-top:18px">
       <button class="b" type="button" id="sys-refresh">Status prüfen</button>
@@ -655,14 +783,16 @@
       <div class="p-code">Kern · Sprachbefehl</div>
       <h2 id="h-chat">Befehl</h2>
     </div>
+    <button class="b tog" type="button" id="speak-toggle" aria-pressed="false" aria-label="PC spricht"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="on" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg><span class="tl" aria-hidden="true">PC spricht</span></button>
     <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
   </header>
   <div class="p-body chatb">
     <div class="log" id="log" aria-live="polite"></div>
     <div class="suggest" id="suggest" aria-label="Vorschläge"></div>
     <form class="send" id="chat-form" autocomplete="off">
+      <button class="b icon" type="button" id="chat-mic" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
       <input type="text" id="chat-input" maxlength="500" placeholder="z. B. „Licht auf 40 % und blau“" aria-label="Nachricht">
-      <button class="b primary" type="submit">Senden</button>
+      <button class="b primary" type="submit" id="chat-send">Senden</button>
     </form>
   </div>
 </section>
@@ -712,7 +842,7 @@
   const SUGGEST = ["Licht an", "Licht aus", "Wie warm ist es?", "Welche Skripte laufen?"];
   // Tool-Name → Knoten, dessen Arm bei Aufrufen aufleuchtet
   const NODE_OF = (name) => /^led_/.test(name) ? "licht" : /^sensors_/.test(name) ? "klima"
-    : /^scripts_/.test(name) ? "skripte" : /^pc_/.test(name) ? "pc" : null;
+    : /^scripts_/.test(name) ? "skripte" : /^(pc|desktop|screen)_/.test(name) ? "pc" : null;
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const finePointer = matchMedia("(pointer: fine)");
 
@@ -1915,12 +2045,12 @@
   //  Hilfen + API (wie bisherige Oberfläche)
   // =====================================================================
   let toastTimer;
-  function toast(text, bad = false) {
+  function toast(text, bad = false, ms = 0) {
     const t = $("toast");
     t.textContent = text;
     t.className = "toast show" + (bad ? " bad" : "");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { t.className = "toast" + (bad ? " bad" : ""); }, bad ? 5000 : 2500);
+    toastTimer = setTimeout(() => { t.className = "toast" + (bad ? " bad" : ""); }, ms || (bad ? 5000 : 2500));
     // Ein offener Modal-Dialog liegt über dem Toast → Fehler (z. B. Sperre) zusätzlich im Token-Dialog zeigen
     if (bad && $("token-dialog").open) showTokenError(text);
   }
@@ -1956,7 +2086,9 @@
   async function api(path, body, method = "POST") {
     if (!token) { askToken(); throw new Error("Kein Token"); }
     const opts = { method, headers: { "Authorization": "Bearer " + token } };
-    if (body !== undefined) {
+    if (body instanceof FormData) {
+      opts.body = body;   // multipart: Content-Type samt Boundary setzt der Browser
+    } else if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
@@ -2069,7 +2201,7 @@
   }
   $("sys-refresh").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
     const st = await refreshStatus();
-    if (st === "ok") { if (!loaded) loadAll(); toast("Status aktualisiert."); }
+    if (st === "ok") { if (!loaded) loadAll(); else { loadVoice(); loadVision(); } toast("Status aktualisiert."); }
     else if (st !== "auth") toast(statusError, true);
   }));
 
@@ -2303,11 +2435,13 @@
   //  PC: Herunterfahren mit Bestätigung
   // =====================================================================
   let pcTimer = null, pcLeft = 0;
+  let pcVol = null;   // letzte gelesene Lautstärke {percent, muted} (null = unbekannt)
   function showPcIdle(reset = false) {
     if (reset && pcTimer) { clearInterval(pcTimer); pcTimer = null; }
     if (pcTimer) return;
     const ok = sys.serverCls === "ok";
-    setNode("pc", ok ? "BEREIT" : sys.serverCls ? "OFFLINE" : "–", ok ? "mit Bestätigung" : sys.serverCls ? "keine Verbindung" : "", ok ? "on" : sys.serverCls ? "bad" : "");
+    const sub = pcVol ? (pcVol.muted ? "Ton stumm" : "Ton " + pcVol.percent + " %") : "mit Bestätigung";
+    setNode("pc", ok ? "BEREIT" : sys.serverCls ? "OFFLINE" : "–", ok ? sub : sys.serverCls ? "keine Verbindung" : "", ok ? "on" : sys.serverCls ? "bad" : "");
     $("pc-state").textContent = ok ? "Kein Herunterfahren geplant." : "";
   }
   function pcCountdown(sec) {
@@ -2341,7 +2475,9 @@
       $("confirm-count").textContent = Math.max(left, 0);
       ring.style.strokeDashoffset = String(100 * (1 - Math.max(left, 0) / total));
     };
-    $("confirm-text").textContent = "PC herunterfahren? Er fährt 15 s nach der Bestätigung herunter.";
+    // Text vom Server (z. B. „Editor schließen? …“); ältere Antworten ohne prompt = Herunterfahren
+    $("confirm-text").textContent = r.prompt || (r.action && r.action !== "pc_shutdown" ? r.message || "Aktion ausführen?"
+      : "PC herunterfahren? Er fährt 15 s nach der Bestätigung herunter.");
     show();
     clearInterval(confirmTimer);
     confirmTimer = setInterval(() => {
@@ -2368,34 +2504,218 @@
     const res = r.result || {};
     toast(res.message || "Ausgeführt.");
     if (res.status === "shutdown_scheduled") pcCountdown(15);
+    if (res.action === "desktop_app_close") fetchApps().catch(() => {});
   }));
   $("shutdown").addEventListener("click", (e) => guarded(e.currentTarget, () => tool("pc_shutdown")));
 
   // =====================================================================
+  //  PC-Steuerung: nur feste, geprüfte Aktionen (Lautstärke, Medientasten, Programme aus der Liste,
+  //  Sperren) und „Bildschirm beschreiben“. Bewusst keine freie Maus-/Tastatursteuerung.
+  // =====================================================================
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function icon(d, cls = "") {
+    const svg = document.createElementNS(SVG_NS, "svg"), p = document.createElementNS(SVG_NS, "path");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+    if (cls) svg.setAttribute("class", cls);
+    p.setAttribute("d", d); svg.append(p);
+    return svg;
+  }
+  const vol = $("vol");
+  let volHeld = false;   // Regler wird gerade gezogen
+  function setVol(v) {
+    vol.value = v;
+    vol.style.setProperty("--p", v + "%");
+  }
+  function showVolume(r) {
+    if (!r || typeof r.percent !== "number") return;
+    pcVol = { percent: r.percent, muted: !!r.muted };
+    vol.classList.remove("unk");
+    if (!volHeld) setVol(r.percent);
+    $("vol-val").textContent = r.muted ? "stumm · " + r.percent + " %" : r.percent + " %";
+    const m = $("vol-mute");
+    m.setAttribute("aria-pressed", String(!!r.muted));
+    m.setAttribute("aria-label", r.muted ? "Ton an" : "Ton aus");
+    showPcIdle();
+  }
+  // Fehlgeschlagene Änderung: Regler zurück auf den zuletzt gelesenen Wert (oder „unbekannt“)
+  function resetVol() {
+    if (pcVol) { showVolume(pcVol); return; }
+    vol.classList.add("unk"); setVol(50); $("vol-val").textContent = "–";
+  }
+  vol.addEventListener("input", () => {
+    vol.classList.remove("unk");
+    vol.style.setProperty("--p", vol.value + "%");
+    $("vol-val").textContent = vol.value + " %";
+  });
+  vol.addEventListener("pointerdown", () => { volHeld = true; });
+  for (const ev of ["pointerup", "pointercancel"]) window.addEventListener(ev, () => { volHeld = false; });
+  vol.addEventListener("change", () => guarded(null, async () => {
+    try { showVolume(await tool("desktop_volume", { action: "set", percent: Number(vol.value) })); }
+    catch (e) { resetVol(); throw e; }
+  }));
+  $("vol-mute").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
+    const muted = e.currentTarget.getAttribute("aria-pressed") === "true";
+    showVolume(await tool("desktop_volume", { action: muted ? "unmute" : "mute" }));
+  }));
+
+  const MEDIA_TEXT = { play_pause: "Wiedergabe/Pause", next: "Nächster Titel", previous: "Vorheriger Titel", stop: "Stopp" };
+  for (const b of document.querySelectorAll("[data-media]")) {
+    b.addEventListener("click", () => guarded(b, async () => {
+      await tool("desktop_media", { action: b.dataset.media });
+      toast(MEDIA_TEXT[b.dataset.media] + " gesendet.");
+    }));
+  }
+
+  // Programme: nur IDs aus desktop.apps (config.yaml); Schließen läuft über den Bestätigen-Dialog
+  const FOCUS_ICON = "M14 4h6v6M20 4l-8 8M10 5H5v14h14v-5";
+  let appsSeq = 0;
+  function deskNote(r, err = "") {
+    const text = err || (r && r.enabled === false ? "PC-Steuerung ist ausgeschaltet (desktop.enabled in config.yaml)."
+      : r && r.available === false ? "Lautstärke, Medien, Programme und Sperren sind nur auf dem Windows-PC verfügbar." : "");
+    $("desk-note").textContent = text;
+    $("desk-note").hidden = !text;
+  }
+  function renderApps(r) {
+    deskNote(r);
+    const box = $("apps"), list = r.apps || [];
+    box.replaceChildren();
+    const running = list.filter((a) => a.running).length;
+    $("apps-count").textContent = list.length ? running + " von " + list.length + " offen" : "";
+    if (!list.length) { box.append(el("span", { class: "label", text: "Keine Programme freigegeben (desktop.apps in config.yaml)." })); return; }
+    for (const a of list) {
+      const todo = a.configured === false;
+      const dot = el("span", { class: "dot" + (a.running ? " on" : todo ? " todo" : "") });
+      const info = el("div", { class: "grow" },
+        el("div", { class: "nm", text: a.label }),
+        el("div", { class: "label", text: todo ? "nicht eingerichtet (TODO)" : a.running ? "läuft" : "geschlossen" }),
+      );
+      const acts = el("div", { class: "acts" });
+      const row = el("div", { class: "script app" }, dot, info, acts);
+      if (a.running) {
+        const front = el("button", {
+          type: "button", class: "b icon", title: "Nach vorne holen", "aria-label": "Nach vorne: " + a.label,
+          onclick: (e) => guarded(e.currentTarget, async () => {
+            const r2 = await tool("desktop_focus", { app_id: a.id });
+            if (r2.message) toast(r2.message, r2.status !== "focused");
+          }),
+        }, icon(FOCUS_ICON));
+        acts.append(front);
+      }
+      acts.append(el("button", {
+        type: "button", class: "b" + (a.running ? " danger" : ""), text: a.running ? "Schließen" : "Starten",
+        "aria-label": (a.running ? "Schließen: " : "Starten: ") + a.label, "data-app": a.id,
+        onclick: (e) => guarded(e.currentTarget, async () => {
+          if (a.running) {
+            const r2 = await tool("desktop_app_close", { app_id: a.id });   // → confirm_required öffnet den Dialog
+            if (r2.status !== "confirm_required") { if (r2.message) toast(r2.message); await fetchApps(); }
+            return;
+          }
+          const r2 = await tool("desktop_app_start", { app_id: a.id });
+          if (r2.message) toast(r2.message);
+          // Der neue Prozess taucht erst nach einem Moment in der Prozessliste auf
+          setTimeout(() => fetchApps().catch(() => {}), 1500);
+        }),
+      }));
+      box.append(row);
+    }
+  }
+  async function fetchApps() {
+    const my = ++appsSeq;
+    const r = await tool("desktop_apps_list");
+    if (my === appsSeq) renderApps(r);
+    return r;
+  }
+  // Beim Öffnen des PC-Panels still lesen: Fehler erscheinen als Hinweis im Panel, nicht als Toast
+  async function loadDesk() {
+    try {
+      const r = await fetchApps();
+      if (r.enabled && r.available) showVolume(await tool("desktop_volume", { action: "get" }));
+    } catch (e) {
+      if (e.message !== "Kein Token") deskNote(null, e.message);
+    }
+    loadVision();
+  }
+
+  // Bildschirm beschreiben: das Bild geht nur an das lokale Vision-Modell; hier kommt nur Text an.
+  // Der Text ist unzuverlässiger Bildschirminhalt → nur per textContent einsetzen, nie als HTML.
+  function showDescription(r) {
+    if (!r || typeof r.description !== "string") return;
+    const box = $("screen-desc");
+    box.hidden = false;
+    box.className = "desc";
+    const meta = [r.model ? "Modell " + r.model : "", "Stand " + new Date().toLocaleTimeString("de-DE")].filter(Boolean).join(" · ");
+    box.replaceChildren(el("div", { text: r.description }), el("div", { class: "dm", text: meta }));
+  }
+  $("screen-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const btn = $("screen-go");
+    if (isBusy(btn)) return;
+    const q = $("screen-q").value.trim();
+    const box = $("screen-desc");
+    box.hidden = false; box.className = "desc wait"; box.textContent = "Bildschirm wird beschrieben …";
+    guarded(btn, async () => {
+      try {
+        showDescription(await tool("screen_describe", q ? { question: q } : {}));
+      } catch (err) {
+        if (err.message === "Kein Token") box.hidden = true;
+        else { box.className = "desc err"; box.textContent = err.message; }
+        throw err;
+      }
+    });
+  });
+  let visionSt = null;
+  async function loadVision() {
+    try { visionSt = await tool("screen_status"); }
+    catch (e) { if (e.message === "Kein Token") return; visionSt = { reason: e.message }; }
+    showVision();
+  }
+  function showVision() {
+    const v = visionSt;
+    $("sys-vision").textContent = !v ? "–" : v.reason || (v.model || "Vision-Modell") + " · bereit";
+    const base = "Das Bildschirmfoto geht nur an das lokale Vision-Modell und wird nicht gespeichert.";
+    if (v && v.reason) $("screen-note").replaceChildren(el("span", { class: "warn-t", text: v.reason }), el("br"), base);
+    else $("screen-note").textContent = v && v.model ? "Lokales Modell " + v.model + ". " + base : base;
+  }
+
+  // =====================================================================
   //  Befehl / Chat
   // =====================================================================
-  function addMsg(text, who, calls = [], extra = "") {
-    const meta = el("div", { class: "meta" });
+  // Das Protokoll ist das Transkript: per Mikrofon erkannte Eingaben und am PC gesprochene Antworten sind markiert.
+  const MIC_ICON = "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4";
+  const SPK_ICON = "M4 9v6h4l5 4V5L8 9zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12";
+  const mark = (cls, d, text) => el("span", { class: "mk " + cls }, icon(d), text);
+  function addMsg(text, who, calls = [], extra = "", opts = {}) {
+    const meta = el("div", { class: "meta" + (who === "me" ? " me" : "") });
     for (const c of calls) meta.append(el("span", { class: "tc " + (c.ok ? "ok" : "bad"), text: (c.ok ? "✓ " : "✗ ") + c.tool }));
+    if (opts.voice) {
+      const d = Number(opts.voice.duration);
+      meta.append(mark("vo", MIC_ICON, "gesprochen" + (d > 0 ? " · " + d.toFixed(1).replace(".", ",") + " s" : "")));
+    }
+    if (opts.spoken) meta.append(mark("sp", SPK_ICON, "am PC gesprochen"));
     if (extra) meta.append(el("span", { text: extra }));
-    const node = el("div", { class: "msg " + who }, el("div", { text }), meta.childNodes.length ? meta : null);
+    const cls = "msg " + who + (opts.voice ? " voice" : "") + (opts.spoken ? " spoken" : "");
+    const node = el("div", { class: cls }, el("div", { text }), meta.childNodes.length ? meta : null);
     $("log").append(node);
     $("log").scrollTop = $("log").scrollHeight;
   }
   function setCmd(text) {
     const c = $("cmd-text");
     c.textContent = text;
-    c.classList.remove("hint");
+    c.classList.remove("hint", "live");
   }
-  function sendChat(text, btn) {
+  // opts.voice = Ergebnis der Spracherkennung ({text, language, duration}) → Eingabe als „gesprochen“ markieren
+  function sendChat(text, btn, opts = {}) {
     if (isBusy(btn)) return;
-    addMsg(text, "me");
+    addMsg(text, "me", [], "", { voice: opts.voice });
     hud.setBusy(true);
     return guarded(btn, async () => {
       try {
-        const r = await api("/api/chat", { message: text });
+        const body = { message: text };
+        const pref = speakPref();   // nur mitschicken, wenn der Schalter bewusst gesetzt wurde (sonst Vorgabe des Servers)
+        if (pref !== null) body.speak = pref;
+        const r = await api("/api/chat", body);
         const via = r.source === "fallback" ? "Regel-Parser" + (r.llm_error ? " · " + r.llm_error : "") : "LLM";
-        addMsg(r.reply || "–", "bot", r.tool_calls || [], via);
+        addMsg(r.reply || "–", "bot", r.tool_calls || [], via, { spoken: r.spoken === true });
         setCmd(r.reply || "–");
         for (const c of r.tool_calls || []) {
           hud.pulse(NODE_OF(String(c.tool)), c.ok ? "ok" : "err");
@@ -2406,6 +2726,12 @@
           if (c.tool === "scripts_list") { scriptsSeq++; renderScripts((c.result || {}).scripts || []); }
           else if (c.tool.startsWith("scripts_")) loadScripts();
           if (c.tool === "pc_shutdown_cancel") showPcIdle(true);
+          if (c.tool === "desktop_volume") showVolume(c.result);
+          if (c.tool === "screen_describe") showDescription(c.result);
+          if (c.tool === "desktop_apps_list") { appsSeq++; renderApps(c.result || {}); }
+          else if (/^desktop_app_(start|close)$/.test(c.tool) && (c.result || {}).status !== "confirm_required") {
+            setTimeout(() => fetchApps().catch(() => {}), 1500);
+          }
         }
       } catch (err) {
         addMsg(err.message, "bot err");
@@ -2419,17 +2745,180 @@
     e.preventDefault();
     const input = $("chat-input");
     const text = input.value.trim();
-    const btn = e.currentTarget.querySelector("button");
+    const btn = $("chat-send");
     if (!text || isBusy(btn)) return;
     input.value = "";
     sendChat(text, btn);
   });
   for (const s of SUGGEST) {
-    $("suggest").append(el("button", { type: "button", class: "chip", text: s, onclick: () => sendChat(s, $("chat-form").querySelector("button")) }));
+    $("suggest").append(el("button", { type: "button", class: "chip", text: s, onclick: () => sendChat(s, $("chat-send")) }));
   }
   addMsg("Systeme bereit. Was kann ich für dich tun?", "bot");
   // Ändert sich die Höhe des Protokolls (Vorschläge/Tastatur), unten bleiben
   if (window.ResizeObserver) new ResizeObserver(() => { const l = $("log"); l.scrollTop = l.scrollHeight; }).observe($("log"));
+
+  // =====================================================================
+  //  Stimme: „PC spricht“ (Windows-Sprachausgabe am PC) und Spracheingabe (Aufnahme hier,
+  //  Erkennung lokal am PC mit Whisper – der Ton geht nur an JARVIS, nie an einen Cloud-Dienst)
+  // =====================================================================
+  const SPEAK_KEY = "jarvis.speak";
+  let speakMem = null;   // Ersatz, falls localStorage blockiert ist
+  let voiceSt = null;    // letzte Antwort von GET /api/voice/status (null = unbekannt)
+  function speakPref() {
+    const v = store.get(SPEAK_KEY) ?? speakMem;
+    return v === "1" ? true : v === "0" ? false : null;
+  }
+  const speakOn = () => speakPref() ?? !!(voiceSt && voiceSt.tts && voiceSt.tts.speak_replies);
+  const ttsReason = () => { const t = voiceSt && voiceSt.tts; return t && !t.available ? t.reason || "Sprachausgabe nicht verfügbar." : ""; };
+  const sttReason = () => { const s = voiceSt && voiceSt.stt; return s && !s.available ? s.reason || "Spracheingabe nicht verfügbar." : ""; };
+  const HTTPS_HINT = "Das Mikrofon geht im Browser nur über HTTPS. Am Handy JARVIS über die Tailscale-HTTPS-Adresse öffnen (siehe README, Spracheingabe am Handy).";
+  function showVoice() {
+    const b = $("speak-toggle"), on = speakOn(), why = ttsReason();
+    b.setAttribute("aria-pressed", String(on));
+    b.classList.toggle("na", !!why);
+    b.title = why || (on ? "Antworten werden am PC vorgelesen" : "Antworten werden nicht vorgelesen");
+    showMic();
+    const t = voiceSt && voiceSt.tts, s = voiceSt && voiceSt.stt;
+    $("sys-tts").textContent = !t ? "–" : t.available ? "bereit · " + (t.voice || "Standardstimme") + (on ? " · liest vor" : " · stumm") : t.reason || "nicht verfügbar";
+    const parts = [];
+    if (s) parts.push(s.available ? "Whisper " + s.model + (s.loaded ? " · geladen" : " · bereit") : s.reason || "nicht verfügbar");
+    if (!window.isSecureContext) parts.push("Browser: nur über HTTPS (Tailscale-HTTPS, siehe README)");
+    $("sys-stt").textContent = parts.join(" · ") || "–";
+  }
+  async function loadVoice() {
+    try { voiceSt = await api("/api/voice/status", undefined, "GET"); }
+    catch (e) { if (e.message === "Kein Token") return; voiceSt = null; }
+    showVoice();
+  }
+  $("speak-toggle").addEventListener("click", () => {
+    const on = !speakOn();
+    speakMem = on ? "1" : "0";
+    store.set(SPEAK_KEY, speakMem);
+    showVoice();
+    const why = ttsReason();
+    if (on) toast(why ? "Vorlesen an, aber: " + why : "PC liest Antworten vor.", !!why, why ? 7000 : 0);
+    else {
+      toast("PC liest nicht mehr vor.");
+      // Ausschalten verstummt auch eine gerade laufende Ansage
+      if (token && voiceSt && voiceSt.tts && voiceSt.tts.available) api("/api/voice/stop").catch(() => {});
+    }
+  });
+
+  // ---------- Spracheingabe: tippen = Aufnahme starten, nochmal tippen = senden ----------
+  const micBtns = [...document.querySelectorAll("[data-mic]")];
+  const rec = { state: "idle", mr: null, stream: null, chunks: [], mime: "", t0: 0, tick: null, cancel: false };
+  const micSupported = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  function micBlocked() {
+    if (!window.isSecureContext) return HTTPS_HINT;
+    if (!micSupported()) return "Dieser Browser kann keinen Ton aufnehmen.";
+    return sttReason();
+  }
+  function showMic() {
+    const why = rec.state === "idle" ? micBlocked() : "";
+    for (const b of micBtns) {
+      b.classList.toggle("rec", rec.state === "rec");
+      b.classList.toggle("na", !!why);
+      b.setAttribute("aria-pressed", String(rec.state === "rec"));
+      b.setAttribute("aria-label", rec.state === "rec" ? "Aufnahme beenden und senden" : "Spracheingabe");
+      if (rec.state === "busy") b.setAttribute("aria-busy", "true"); else b.removeAttribute("aria-busy");
+      b.title = rec.state === "rec" ? "Tippen: Aufnahme senden" : why || "Spracheingabe: tippen, sprechen, nochmal tippen";
+    }
+  }
+  function liveCmd(text) { setCmd(text); $("cmd-text").classList.add("live"); }
+  function micError(e) {
+    const n = e && e.name;
+    if (n === "NotAllowedError" || n === "SecurityError") return "Mikrofon-Zugriff verweigert – im Browser für diese Seite erlauben.";
+    if (n === "NotFoundError" || n === "OverconstrainedError") return "Kein Mikrofon gefunden.";
+    if (n === "NotReadableError") return "Das Mikrofon ist belegt (anderes Programm?).";
+    return "Mikrofon nicht verfügbar: " + ((e && e.message) || n || "unbekannter Fehler");
+  }
+  function micClick() {
+    if (rec.state === "rec") { stopRec(false); return; }
+    if (rec.state !== "idle") return;
+    // Ohne HTTPS (Handy über http://…) gibt es kein Mikrofon im Browser → erklären statt still scheitern
+    if (!window.isSecureContext) { toast(HTTPS_HINT, false, 10000); return; }
+    if (!micSupported()) { toast("Dieser Browser kann keinen Ton aufnehmen (MediaRecorder fehlt).", true); return; }
+    if (!token) { askToken(); return; }
+    const why = sttReason();
+    if (why) { toast(why, true, 8000); return; }
+    startRec();
+  }
+  async function startRec() {
+    rec.state = "busy"; showMic();   // solange die Mikrofon-Freigabe des Browsers offen ist
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      rec.state = "idle"; showMic();
+      toast(micError(e), true, 7000);
+      return;
+    }
+    try {
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]
+        .find((m) => typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(m)) || "";
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      Object.assign(rec, { mr, stream, chunks: [], mime: mr.mimeType || mime, cancel: false, t0: performance.now() });
+      mr.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); });
+      mr.addEventListener("stop", finishRec, { once: true });
+      mr.start();
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      Object.assign(rec, { mr: null, stream: null, state: "idle" });
+      showMic();
+      toast("Aufnahme nicht möglich: " + e.message, true);
+      return;
+    }
+    rec.state = "rec"; showMic();
+    const max = Math.max(1, Number(voiceSt && voiceSt.stt && voiceSt.stt.max_seconds) || 30);
+    const show = () => {
+      const sec = (performance.now() - rec.t0) / 1000;
+      if (sec >= max - 0.4) { stopRec(false); return; }   // Server nimmt höchstens max_seconds an
+      liveCmd("Höre zu … " + Math.floor(sec) + " s");   // roter Mikrofon-Knopf = zum Senden tippen
+    };
+    show();
+    rec.tick = setInterval(show, 250);
+  }
+  function stopRec(cancel) {
+    if (rec.state !== "rec") return;
+    clearInterval(rec.tick); rec.tick = null;
+    rec.cancel = cancel; rec.state = "busy"; showMic();
+    try { rec.mr.stop(); } catch { finishRec(); }
+  }
+  async function finishRec() {
+    const { chunks, stream, cancel } = rec;
+    const secs = (performance.now() - rec.t0) / 1000;
+    const type = String(rec.mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
+    if (stream) stream.getTracks().forEach((t) => t.stop());   // Mikrofon sofort freigeben
+    Object.assign(rec, { mr: null, stream: null, chunks: [] });
+    const done = () => { rec.state = "idle"; showMic(); };
+    if (cancel) { done(); setCmd("Aufnahme verworfen."); return; }
+    if (secs < 0.5 || !chunks.length) { done(); setCmd("Zu kurz."); toast("Zu kurz – Mikrofon antippen, sprechen, nochmal antippen.", true); return; }
+    liveCmd("Erkenne Sprache …");
+    try {
+      const fd = new FormData();
+      const ext = { "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/wav": "wav" }[type] || "webm";
+      fd.append("audio", new Blob(chunks, { type }), "sprache." + ext);
+      const r = await api("/api/voice/stt", fd);
+      const text = String(r.text || "").trim().slice(0, 500);
+      if (!text) { setCmd("Nichts verstanden."); toast("Nichts verstanden – bitte noch einmal.", true); return; }
+      useRecognized(text, r);
+    } catch (e) {
+      if (e.message !== "Kein Token") { setCmd(e.message); toast(e.message, true, 7000); }
+    } finally {
+      done();
+    }
+  }
+  // Erkannter Text kommt ins Eingabefeld und wird wie getippt gesendet (Antwort steht im Protokoll = Transkript)
+  function useRecognized(text, r) {
+    const input = $("chat-input"), btn = $("chat-send");
+    input.value = text;
+    if (isBusy(btn)) { setCmd(text); toast("Die letzte Antwort läuft noch – der erkannte Text steht im Eingabefeld.", false, 5000); return; }
+    input.value = "";
+    setCmd("„" + text + "“");
+    sendChat(text, btn, { voice: r });
+  }
+  for (const b of micBtns) b.addEventListener("click", micClick);
+  showVoice();
 
   // =====================================================================
   //  Panels (nur eins gleichzeitig)
@@ -2440,9 +2929,11 @@
     licht: () => tool("led_status").then(showLed).catch(ledUnavailable),
     klima: () => readSensors(),
     skripte: () => loadScripts(),
-    system: () => refreshStatus(),
+    pc: () => loadDesk(),
+    system: () => { refreshStatus(); loadVoice(); loadVision(); },
   };
   const triggers = [...document.querySelectorAll("[data-panel]")];
+  const NARROW_BAR = 360;   // Befehlsleiste schmaler (px): ohne „CMD“-Kürzel und Quelle, damit der Text Platz hat
   function setExpanded(id) {
     for (const b of triggers) b.setAttribute("aria-expanded", String(b.dataset.panel === id));
   }
@@ -2456,15 +2947,23 @@
       rs.setProperty("--pt", g.centerBox.top + "px"); rs.setProperty("--ph", g.centerBox.height + "px");
     }
     // Handy quer: Befehlsleiste nur in der Mittelspalte; schmal → Kürzel und Quelle ausblenden
+    // (Breite aus dem Layout berechnet, nicht gemessen: die Leiste gleitet beim Moduswechsel noch)
     if (g.cmdBox) {
       rs.setProperty("--cl", g.cmdBox.left + "px"); rs.setProperty("--cr", g.cmdBox.right + "px");
     }
-    $("cmd").classList.toggle("narrow", !!g.cmdBox && window.innerWidth - g.cmdBox.left - g.cmdBox.right < 330);
+    let barW = Infinity;
+    if (g.cmdBox) barW = window.innerWidth - g.cmdBox.left - g.cmdBox.right;
+    else if (g.mode === "sheet") {
+      const cs = getComputedStyle($("safe-probe"));
+      barW = window.innerWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - 24;
+    }
+    $("cmd").classList.toggle("narrow", barW < NARROW_BAR);
     applyCover();
   }
   // Was vom offenen Panel verdeckt ist, ist nicht bedienbar (inert); sichtbare Knoten bleiben antippbar.
   function applyCover() {
     for (const b of triggers) b.inert = false;
+    $("mic").inert = false;
     if (!openId) return;
     const g = hud.geom();
     if (g.mode === "sheet") {
@@ -2474,9 +2973,9 @@
       const under = (x, y) => y > top - 6 && x > l - 6 && x < r + 6;
       for (const id of Object.keys(g.nodes)) if (under(g.nodes[id].x, g.nodes[id].y)) $("n-" + id).inert = true;
       if (under(g.cx, g.cy)) $("core").inert = true;
-      $("cmd").inert = true;
+      $("cmd").inert = true; $("mic").inert = true;
     } else if (g.mode === "center") {
-      $("core").inert = true; $("cmd").inert = true;
+      $("core").inert = true; $("cmd").inert = true; $("mic").inert = true;
       // Liegt das Panel (enges Querformat) über Knoten oder der Statusleiste, sind diese nicht bedienbar
       const c = g.centerBox;
       if (c) {
@@ -2530,6 +3029,7 @@
     setExpanded(null);
     hud.setPanel(null);
     for (const b of triggers) b.inert = false;
+    $("mic").inert = false;
     // Fokus immer an den Auslöser zurückgeben (nie auf <body> fallen lassen)
     if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
     opener = null;
@@ -2538,6 +3038,8 @@
   for (const x of document.querySelectorAll("[data-close]")) x.addEventListener("click", closePanel);
   $("fx").addEventListener("click", closePanel);   // Tipp auf freie HUD-Fläche schließt
   document.addEventListener("keydown", (e) => {
+    // Escape während der Aufnahme verwirft sie (statt das Panel zu schließen)
+    if (e.key === "Escape" && rec.state === "rec") { e.preventDefault(); stopRec(true); return; }
     if (document.querySelector("dialog[open]")) return;
     if (e.key === "Escape" && openId) { e.preventDefault(); closePanel(); return; }
     const tag = (document.activeElement && document.activeElement.tagName) || "";
@@ -2573,6 +3075,7 @@
     loaded = true;
     loadScripts();
     readSensors();
+    loadVoice();   // Vorgabe für „PC spricht“ und ob die Spracheingabe am PC eingerichtet ist
     // Beim Start still: ein noch nicht eingerichteter LED-Strip soll keine Fehlermeldung werfen.
     tool("led_status").then(showLed).catch(ledUnavailable);
   }

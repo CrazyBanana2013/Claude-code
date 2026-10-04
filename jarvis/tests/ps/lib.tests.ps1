@@ -450,6 +450,221 @@ Invoke-Test 'Wizard-Aufrufe (Vertrag setup_wizard)' {
     Assert-True ($null -eq (Get-JarvisServerInfo -Python $python3.Path -Target $t)) 'Fehler -> $null'
 }
 
+# --- Spracheingabe (Zusatzpaket "voice" + Whisper-Modell, nur nach Zustimmung) ---------------
+
+function Invoke-VoiceStep {
+    # Ruft Initialize-JarvisVoice auf und trennt Rueckgabe und Bildschirmausgabe (Write-Host = Stream 6).
+    param([hashtable]$Arguments)
+    $records = @(Initialize-JarvisVoice @Arguments 6>&1)
+    $info = [System.Management.Automation.InformationRecord]
+    $result = @($records | Where-Object { $_ -isnot $info }) | Select-Object -Last 1
+    $text = (@($records | Where-Object { $_ -is $info } | ForEach-Object { [string]$_.MessageData }) -join "`n")
+    return [pscustomobject]@{ Result = $result; Text = $text }
+}
+
+function New-VoiceMocks {
+    # Ergebnisse von "python -m app.voice.stt --check" der Reihe nach; Aufrufe werden protokolliert.
+    param([int[]]$CheckCodes, [int]$ProcessCode = 0, [int]$SyncCode = 0, [string[]]$Answers = @())
+    $script:checkCodes = [System.Collections.Generic.Queue[int]]::new()
+    foreach ($c in $CheckCodes) { $script:checkCodes.Enqueue($c) }
+    $script:processCode = $ProcessCode
+    $script:syncCode = $SyncCode
+    $script:answers = [System.Collections.Generic.Queue[string]]::new()
+    foreach ($a in $Answers) { $script:answers.Enqueue($a) }
+    $script:checks = @()
+    $script:processes = @()
+    $script:syncs = @()
+    $script:asked = @()
+}
+
+$voiceMocks = {
+    function Invoke-JarvisCapture {
+        param($FilePath, $ArgumentList, $WorkingDirectory, $TimeoutSec, $Environment)
+        $script:checks += , @($ArgumentList)
+        $code = $script:checkCodes.Dequeue()
+        $out = @{ 0 = @("Whisper-Modell 'small' ist vorhanden: /x/whisper"); 1 = @("Whisper-Modell 'small' fehlt (Ordner /x).") }
+        $lines = @()
+        if ($out.ContainsKey($code)) { $lines = $out[$code] }
+        return [pscustomobject]@{ ExitCode = $code; Output = $lines; ErrorText = ('stderr {0}' -f $code) }
+    }
+    function Invoke-JarvisProcess {
+        param($FilePath, $ArgumentList, $WorkingDirectory, $Environment)
+        $script:processes += , @{ File = $FilePath; Args = @($ArgumentList); Cwd = $WorkingDirectory }
+        return $script:processCode
+    }
+    function Find-JarvisUv { return [pscustomobject]@{ Path = '/home/x/.local/bin/uv'; Version = 'uv 1' } }
+    function Invoke-JarvisUvSync { param($Uv, $Target, $Extras) $script:syncs += , @($Extras); return $script:syncCode }
+    function Read-JarvisAnswer { param($Prompt) $script:asked += $Prompt; if ($script:answers.Count -gt 0) { return $script:answers.Dequeue() }; return '' }
+}
+
+Invoke-Test 'Spracheingabe: Argumente fuer app.voice.stt und uv sync --extra voice' {
+    $t = New-TestDir 't'
+    $cfg = Join-Path $t 'config.yaml'
+    Assert-Equal @('-m', 'app.voice.stt', '--check', '--config', $cfg) @(Get-JarvisVoiceArguments -Target $t -Action 'check') 'check'
+    Assert-Equal @('-m', 'app.voice.stt', '--download', '--config', $cfg) @(Get-JarvisVoiceArguments -Target $t -Action 'download') 'download'
+    Assert-Equal @('sync', '--frozen', '--no-dev', '--extra', 'voice') @(Get-JarvisUvSyncArguments -Extras @('voice')) 'uv sync mit Extra'
+    Assert-Equal @('sync', '--frozen', '--no-dev') @(Get-JarvisUvSyncArguments -Extras @('', $null)) 'leere Extras zaehlen nicht'
+    $pip = Get-JarvisVoicePipCommand -Target $t
+    Assert-Equal @('-m', 'pip', 'install', '--require-hashes', '--no-input', '--disable-pip-version-check', '-r', (Join-Path $t 'requirements-voice.txt')) @($pip.ArgumentList) 'pip mit Hashes'
+    Assert-Equal (Get-JarvisVenvPython -Target $t) $pip.FilePath 'pip aus der venv'
+}
+
+Invoke-Test 'Spracheingabe aus: nichts pruefen, nichts laden, keine Frage' {
+    . $voiceMocks
+    New-VoiceMocks -CheckCodes @()
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $false; stt_model = 'small'; stt_model_size = 'ca. 500 MB' }
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; PreviouslyInstalled = $true }
+    Assert-Equal 'off' $r.Result.State 'State'
+    Assert-Equal 0 @($r.Result.Extras).Count 'keine Extras mehr im Marker'
+    Assert-Equal 0 ($script:checks.Count + $script:processes.Count + $script:syncs.Count + $script:asked.Count) 'nichts aufgerufen'
+    Assert-True ($r.Text -match 'naechsten Install.cmd-Lauf') ('Hinweis auf Entfernen: ' + $r.Text)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $null }
+    Assert-Equal 'off' $r.Result.State 'ohne Info (config.yaml unlesbar) = aus'
+}
+
+Invoke-Test 'Spracheingabe an: Paket und Modell nur nach Zustimmung (Enter = ja), mit uv' {
+    . $voiceMocks
+    New-VoiceMocks -CheckCodes @(3, 1)
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'small'; stt_model_size = 'ca. 500 MB' }
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info }
+    Assert-Equal 'ready' $r.Result.State ('State: ' + $r.Text)
+    Assert-Equal @('voice') @($r.Result.Extras) 'Extras'
+    Assert-Equal 2 $script:asked.Count 'zwei Fragen'
+    Assert-True ($script:asked[0] -like '*Zusatzpaket*installieren?*(J/n)*') ('Frage 1: ' + $script:asked[0])
+    Assert-True ($script:asked[1] -like '*Whisper-Modell "small" jetzt herunterladen?*(J/n)*') ('Frage 2: ' + $script:asked[1])
+    Assert-Equal 1 $script:syncs.Count 'uv sync'
+    Assert-Equal @('voice') @($script:syncs[0]) 'mit --extra voice'
+    Assert-Equal 1 $script:processes.Count 'ein Prozess (Download)'
+    Assert-Equal @('-m', 'app.voice.stt', '--download', '--config', (Join-Path $t 'config.yaml')) @($script:processes[0].Args) 'Download-Aufruf'
+    Assert-Equal $t $script:processes[0].Cwd 'im Installationsordner'
+    Assert-Equal 2 $script:checks.Count 'vorher und nachher geprueft'
+    Assert-True ($r.Text -match 'ca\. 500 MB' -and $r.Text -match 'huggingface\.co' -and $r.Text -match 'ca\. 90 MB') ('Groessen/Quellen genannt: ' + $r.Text)
+}
+
+Invoke-Test 'Spracheingabe an, aber Nein: nichts laden, Hinweis' {
+    . $voiceMocks
+    New-VoiceMocks -CheckCodes @(3) -Answers @('n')
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'small' }
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info }
+    Assert-Equal 'no-package' $r.Result.State 'State'
+    Assert-Equal 0 ($script:processes.Count + $script:syncs.Count) 'nichts installiert'
+    New-VoiceMocks -CheckCodes @(1) -Answers @('n')
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info }
+    Assert-Equal 'no-model' $r.Result.State 'Modell abgelehnt'
+    Assert-Equal @('voice') @($r.Result.Extras) 'Paket ist aber da'
+    Assert-Equal 0 $script:processes.Count 'kein Download'
+    Assert-True ($r.Text -match 'app\.voice\.stt --download --config') ('Befehl zum Nachholen: ' + $r.Text)
+}
+
+Invoke-Test 'Spracheingabe mit -Yes: nie laden (ausser -InstallVoice), pip-Weg mit requirements-voice.txt' {
+    . $voiceMocks
+    New-VoiceMocks -CheckCodes @(3)
+    $t = New-TestDir 't'
+    [void](Set-TestFile $t 'requirements-voice.txt' 'faster-whisper==1 --hash=sha256:00')
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'base'; stt_model_size = 'ca. 145 MB' }
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'pip'; Info = $info; AssumeYes = $true }
+    Assert-Equal 'no-package' $r.Result.State 'State mit -Yes'
+    Assert-Equal 0 ($script:asked.Count + $script:processes.Count) 'keine Frage, kein Download'
+    Assert-True ($r.Text -match '-InstallVoice') 'Hinweis auf -InstallVoice'
+    New-VoiceMocks -CheckCodes @(3, 1)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'pip'; Info = $info; AssumeYes = $true; InstallVoice = $true }
+    Assert-Equal 'ready' $r.Result.State ('State mit -InstallVoice: ' + $r.Text)
+    Assert-Equal 0 $script:asked.Count 'keine Frage'
+    Assert-Equal 0 $script:syncs.Count 'kein uv'
+    Assert-Equal 2 $script:processes.Count 'pip + Download'
+    Assert-Equal (Get-JarvisVenvPython -Target $t) $script:processes[0].File 'pip aus der venv'
+    Assert-True (@($script:processes[0].Args) -contains '--require-hashes') 'mit Hashes'
+    Assert-Equal (Join-Path $t 'requirements-voice.txt') @($script:processes[0].Args)[-1] 'requirements-voice.txt'
+    Assert-True ($r.Text -match 'ca\. 145 MB') 'Groesse des gewaehlten Modells'
+}
+
+Invoke-Test 'Spracheingabe: fruehere Zustimmung gilt fuer das Paket, nicht fuers Modell' {
+    . $voiceMocks
+    New-VoiceMocks -CheckCodes @(3, 0)
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'small' }
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; AssumeYes = $true; PreviouslyInstalled = $true }
+    Assert-Equal 'ready' $r.Result.State 'State'
+    Assert-Equal 1 $script:syncs.Count 'Paket wieder installiert (uv)'
+    Assert-Equal 0 $script:asked.Count 'ohne Frage'
+    New-VoiceMocks -CheckCodes @(1)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; AssumeYes = $true; PreviouslyInstalled = $true }
+    Assert-Equal 'no-model' $r.Result.State 'Modell nicht ohne Zustimmung'
+    Assert-Equal 0 $script:processes.Count 'kein Download'
+}
+
+Invoke-Test 'Spracheingabe: Fehler brechen nie ab' {
+    . $voiceMocks
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'small' }
+    New-VoiceMocks -CheckCodes @(3) -SyncCode 1
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'no-package' $r.Result.State 'uv sync scheitert'
+    Assert-Equal 0 @($r.Result.Extras).Count 'kein Extra im Marker'
+    New-VoiceMocks -CheckCodes @(3)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'pip'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'no-package' $r.Result.State 'requirements-voice.txt fehlt'
+    Assert-Equal 0 $script:processes.Count 'pip nicht gestartet'
+    New-VoiceMocks -CheckCodes @(1) -ProcessCode 1
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'no-model' $r.Result.State 'Download scheitert'
+    Assert-True ($r.Text -match 'Download des Whisper-Modells fehlgeschlagen') ('Warnung: ' + $r.Text)
+    New-VoiceMocks -CheckCodes @(2)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'error' $r.Result.State 'config-Fehler'
+    Assert-True ($r.Text -match 'stderr 2' -and $r.Text -match 'Exitcode 2') ('Meldung weitergegeben: ' + $r.Text)
+    Assert-Equal 0 $script:processes.Count 'kein Download bei Fehler'
+    New-VoiceMocks -CheckCodes @(3, 3)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'no-package' $r.Result.State 'nach Installation immer noch nicht importierbar'
+}
+
+Invoke-Test 'Python-Umgebung mit Extra voice: uv sync --extra voice, bei Fehler ohne' {
+    $t = New-TestDir 't'
+    $script:syncs = @()
+    $script:codes = [System.Collections.Generic.Queue[int]]::new()
+    function Find-JarvisUv { return [pscustomobject]@{ Path = '/x/uv'; Version = 'uv 1' } }
+    function Invoke-JarvisUvSync {
+        param($Uv, $Target, $Extras)
+        $script:syncs += , @($Extras)
+        [void](Set-TestFile $t '.venv/bin/python' '')
+        return $script:codes.Dequeue()
+    }
+    $script:codes.Enqueue(0)
+    Assert-Equal 'uv' (Initialize-JarvisPythonEnvironment -Target $t -Extras @('voice')) 'Ergebnis'
+    Assert-Equal 1 $script:syncs.Count 'ein Lauf'
+    Assert-Equal @('voice') @($script:syncs[0]) 'mit Extra'
+    $script:syncs = @()
+    $script:codes.Enqueue(1)
+    $script:codes.Enqueue(0)
+    Assert-Equal 'uv' (Initialize-JarvisPythonEnvironment -Target $t -Extras @('voice')) 'Ergebnis nach Fehler'
+    Assert-Equal 2 $script:syncs.Count 'zweiter Lauf'
+    Assert-Equal 0 @($script:syncs[1] | Where-Object { $_ }).Count 'ohne Extra'
+}
+
+Invoke-Test 'config.yaml: neue Abschnitte erkennen (nur fuer den Hinweis beim Update)' {
+    $d = New-TestDir 'c'
+    $old = Set-TestFile $d 'alt.yaml' "server:`n  port: 8765`n# voice: kommt spaeter`nllm:`n  model: x`n"
+    $new = Set-TestFile $d 'neu.yaml' "server:`r`n  port: 8765`r`nvoice:`r`n  tts:`r`n    enabled: true`r`n"
+    Assert-False (Test-JarvisConfigHasSection -Path $old -Name 'voice') 'Kommentar zaehlt nicht'
+    Assert-True (Test-JarvisConfigHasSection -Path $new -Name 'voice') 'Abschnitt vorhanden (CRLF)'
+    Assert-True (Test-JarvisConfigHasSection -Path (Join-Path $d 'fehlt.yaml') -Name 'voice') 'unlesbar -> kein Hinweis'
+}
+
+Invoke-Test 'Marker: python_extras schreiben/lesen, alter Marker ohne Feld = leer' {
+    $dir = New-TestDir 'm'
+    $m = New-JarvisManifest -Version '0.3.0' -Source '/q' -Files @('app/__main__.py') -PythonEnv 'uv' -PythonExtras @('voice', '')
+    Write-JarvisManifest -Target $dir -Manifest $m
+    Assert-Equal @('voice') @(Get-JarvisManifestList (Read-JarvisManifest $dir) 'python_extras') 'python_extras'
+    [System.IO.File]::WriteAllText((Get-JarvisManifestPath $dir), '{"version": "0.2.0", "files": [], "python_env": "uv"}')
+    Assert-Equal 0 @(Get-JarvisManifestList (Read-JarvisManifest $dir) 'python_extras').Count 'Marker von 0.2.0'
+    $rest = New-JarvisRemnantManifest (Read-JarvisManifest $dir)
+    Assert-Equal 0 @($rest['python_extras']).Count 'Rest-Marker ohne Extras'
+}
+
 # --- Verknuepfungen (Windows-Funktionen ersetzt) ----------------------------------------------
 
 Invoke-Test 'Startmenue: vier Eintraege mit richtigen Zielen' {

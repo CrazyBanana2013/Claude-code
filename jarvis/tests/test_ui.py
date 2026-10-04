@@ -42,6 +42,30 @@ async def test_ui_uses_only_registered_tools(factory):
     assert used and used <= names, used - names
 
 
+async def test_ui_api_paths_exist(factory):
+    """Jeder feste /api/...-Pfad, den die Oberfläche aufruft, ist eine Route des Servers (kein 404/405 vom Router)."""
+    used = set(re.findall(r'api\("(/api/[a-z_/]+)"', INDEX)) | set(re.findall(r'fetch\("(/api/[a-z_/]+)"', INDEX))
+    assert {"/api/voice/status", "/api/voice/stop", "/api/voice/stt", "/api/chat", "/api/confirm/"} <= used
+    get_paths = {"/api/health", "/api/status", "/api/voice/status"}  # in der Oberfläche per GET
+    app, token = factory()
+    missing = []
+    async with client_for(app, token=token) as c:
+        for path in sorted(used):
+            url = path + ("scripts_list" if path == "/api/tools/" else "x" if path.endswith("/") else "")
+            r = await (c.get(url) if path in get_paths else c.post(url))
+            if r.status_code == 405 or (r.status_code == 404 and r.json() == {"detail": "Not Found"}):
+                missing.append(f"{path} → {r.status_code}")
+    assert not missing, missing
+
+
+def test_ui_never_captures_screen_or_sends_images():
+    # Bildschirmfotos macht nur der PC (screen_describe → lokales Ollama); die Oberfläche bekommt nur Text.
+    assert "getDisplayMedia" not in INDEX
+    assert "toDataURL" not in INDEX and "toBlob" not in INDEX  # kein Bild wird im Browser kodiert/hochgeladen
+    # Bildschirmbeschreibung wird nie als HTML eingesetzt
+    assert "description + " not in INDEX and "innerHTML = r.description" not in INDEX
+
+
 async def test_ui_endpoints_respond(factory):
     app, token = factory()
     async with client_for(app, token=token) as c:

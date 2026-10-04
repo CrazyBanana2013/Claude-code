@@ -6,6 +6,7 @@ import builtins
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,10 +17,13 @@ import yaml
 
 from app import setup_wizard as sw
 from app.config import PROJECT_DIR, parse_config
-from app.ollama_models import OllamaUnavailable, list_models, tool_models
+from app.ollama_models import OllamaUnavailable, list_models, tool_models, vision_models
 from tests.conftest import example_config_dict
 
 EXAMPLE = PROJECT_DIR / "config.example.yaml"
+# Schritte 6–8 mit Enter (ohne installiertes Vision-Modell fragt Schritt 6 nichts): PC-Steuerung einschalten,
+# kein weiteres Programm, Sprachausgabe, Spracheingabe.
+NEW_STEPS = ["", "", "", ""]
 OLLAMA_HOST = "127.0.0.1"
 WIN_PS1 = "C:\\Users\\Max Müller\\CS2 Skript\\run.ps1"
 
@@ -159,6 +163,7 @@ def test_full_interactive_run(tmp_path):
         "",                     # hide_window: nein
         "",                     # Modell: Vorgabe = kleinstes
         "8800",                 # Port
+        *NEW_STEPS,             # Bildschirm (kein Vision-Modell), PC-Steuerung, Stimme
         "",                     # Speichern
     ]
     code, scripted, net = run_wizard(tmp_path, answers, net)
@@ -196,7 +201,7 @@ def test_full_interactive_run(tmp_path):
 
 @pytest.mark.parametrize("skip", ["", "-"])
 def test_skip_everything_keeps_todo(tmp_path, skip):
-    answers = ["n", skip, skip, skip, skip, ""]  # kein Test, WLED, ESPHome, CS2, Port, Speichern
+    answers = ["n", skip, skip, skip, skip, *NEW_STEPS, ""]  # kein Test, WLED, ESPHome, CS2, Port, ..., Speichern
     code, scripted, net = run_wizard(tmp_path, answers)
     assert code == 0, scripted.text
     assert scripted.answers == []
@@ -212,7 +217,7 @@ def test_skip_everything_keeps_todo(tmp_path, skip):
 
 
 def test_windows_path_with_spaces_and_umlauts_round_trips(tmp_path):
-    answers = ["n", "", "", f'"{WIN_PS1}"', "", "j", "", ""]
+    answers = ["n", "", "", f'"{WIN_PS1}"', "", "j", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p == WIN_PS1)
     assert code == 0, scripted.text
     text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
@@ -233,7 +238,7 @@ def test_manual_command_with_quotes_round_trips(tmp_path):
         program, tricky, "--pfad=C:\\Temp\\", "'quoted arg'", "",
         "D:\\Spiele\\CS2 Ordner",  # Arbeitsordner
         "",                       # hide_window
-        "", "",                   # Port, Speichern
+        "", *NEW_STEPS, "",       # Port, Schritte 6–8, Speichern
     ]
     code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p == cmd_file, is_dir=lambda p: True)
     assert code == 0, scripted.text
@@ -308,7 +313,7 @@ def ollama_with_current():
 def test_existing_config_values_are_preserved_and_backed_up(tmp_path):
     original = write_yaml(tmp_path / "config.yaml", custom_existing(), "# meine Notiz\n")
     before = read_config(tmp_path / "config.yaml")
-    answers = ["n", "http://WLED2.test:8080/json/info", "", "", "", "", "", "", ""]
+    answers = ["n", "http://WLED2.test:8080/json/info", "", "", "", "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     assert scripted.answers == []
@@ -323,7 +328,7 @@ def test_existing_config_values_are_preserved_and_backed_up(tmp_path):
 
 def test_unchanged_run_does_not_touch_file(tmp_path):
     original = write_yaml(tmp_path / "config.yaml", custom_existing(), "# meine Notiz\n")
-    answers = ["n", "", "", "", "", "", "", ""]  # Test, WLED, ESP, 2x Entität, CS2, Modell, Port
+    answers = ["n", "", "", "", "", "", "", "", *NEW_STEPS]  # Test, WLED, ESP, 2x Entität, CS2, Modell, Port, 6–8
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     assert scripted.answers == []
@@ -336,7 +341,7 @@ def test_separate_esphome_devices_are_asked_separately(tmp_path):
     data = custom_existing()
     data["sensors"][1]["base_url"] = "http://esp2.test"
     write_yaml(tmp_path / "config.yaml", data)
-    answers = ["n", "", "esp3.test", "", "", "", "", "", "", ""]  # WLED, Gerät 1, Gerät 2, 2x Entität, ...
+    answers = ["n", "", "esp3.test", "", "", "", "", "", "", *NEW_STEPS, ""]  # WLED, Gerät 1, Gerät 2, 2x Entität, ...
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     cfg = read_config(tmp_path / "config.yaml")
@@ -345,7 +350,7 @@ def test_separate_esphome_devices_are_asked_separately(tmp_path):
 
 def test_dash_resets_configured_values_to_todo(tmp_path):
     write_yaml(tmp_path / "config.yaml", custom_existing())
-    answers = ["n", "-", "", "-", "", "-", "-", "", ""]  # WLED -, ESP Enter, Temp -, Feuchte Enter, CS2 -, Modell -
+    answers = ["n", "-", "", "-", "", "-", "-", "", *NEW_STEPS, ""]  # WLED -, ESP, Temp -, Feuchte, CS2 -, Modell -
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     cfg = read_config(tmp_path / "config.yaml")
@@ -368,7 +373,7 @@ def test_empty_sensor_and_script_lists_stay_empty_when_skipped(tmp_path):
     data = custom_existing()
     data["sensors"], data["scripts"] = [], []
     write_yaml(tmp_path / "config.yaml", data)
-    answers = ["n", "", "", "", "", ""]  # WLED, ESP (Vorschlag, übersprungen), CS2, Modell, Port
+    answers = ["n", "", "", "", "", "", *NEW_STEPS]  # WLED, ESP (Vorschlag, übersprungen), CS2, Modell, Port
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     assert "Keine Änderungen" in scripted.text
@@ -378,7 +383,7 @@ def test_empty_sensor_list_gets_defaults_when_configured(tmp_path):
     data = custom_existing()
     data["sensors"] = []
     write_yaml(tmp_path / "config.yaml", data)
-    answers = ["n", "", "esp.test", "Temp A", "-", "", "", "", ""]
+    answers = ["n", "", "esp.test", "Temp A", "-", "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     sensors = read_config(tmp_path / "config.yaml")["sensors"]
@@ -407,7 +412,7 @@ def test_abort_leaves_file_untouched(tmp_path, stop, after):
 
 
 def test_declining_save_is_abort(tmp_path):
-    answers = ["n", "192.0.2.10", "", "", "", "n"]
+    answers = ["n", "192.0.2.10", "", "", "", *NEW_STEPS, "n"]
     code, scripted, _ = run_wizard(tmp_path, answers)
     assert code == 1
     assert not (tmp_path / "config.yaml").exists()
@@ -427,14 +432,14 @@ def test_invalid_existing_config_interactive(tmp_path):
     assert "prot" in scripted.text
     assert (tmp_path / "config.yaml").read_bytes() == broken
 
-    code, scripted, _ = run_wizard(tmp_path, ["j", "n", "", "", "", "", ""])
+    code, scripted, _ = run_wizard(tmp_path, ["j", "n", "", "", "", "", *NEW_STEPS, ""])
     assert code == 0, scripted.text
     assert read_config(tmp_path / "config.yaml") == example_dump()
     assert (tmp_path / "config.yaml.bak").read_bytes() == broken
 
 
 def test_invalid_port_is_asked_again(tmp_path):
-    answers = ["n", "", "", "", "0", "70000", "acht", "8766", ""]
+    answers = ["n", "", "", "", "0", "70000", "acht", "8766", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers)
     assert code == 0, scripted.text
     assert scripted.text.count("1 bis 65535") == 3
@@ -442,14 +447,14 @@ def test_invalid_port_is_asked_again(tmp_path):
 
 
 def test_invalid_url_is_asked_again(tmp_path):
-    answers = ["n", "ftp://wled.test", "wled test", "wled.test:99999", "wled.test", "", "", "", ""]
+    answers = ["n", "ftp://wled.test", "wled test", "wled.test:99999", "wled.test", "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers)
     assert code == 0, scripted.text
     assert read_config(tmp_path / "config.yaml")["wled"]["base_url"] == "http://wled.test"
 
 
 def test_example_missing_uses_builtin_defaults(tmp_path):
-    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", ""], example=tmp_path / "fehlt.yaml")
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", *NEW_STEPS, ""], example=tmp_path / "fehlt.yaml")
     assert code == 0, scripted.text
     assert read_config(tmp_path / "config.yaml") == example_dump()
 
@@ -464,7 +469,7 @@ def test_builtin_defaults_match_example():
 
 
 def test_wled_probe_failure_asks_and_can_retry(tmp_path):
-    answers = ["", "192.0.2.99", "n", "192.0.2.10", "", "", "", ""]
+    answers = ["", "192.0.2.99", "n", "192.0.2.10", "", "", "", *NEW_STEPS, ""]
     code, scripted, net = run_wizard(tmp_path, answers, device_net())
     assert code == 0, scripted.text
     assert "Nicht erreichbar" in scripted.text
@@ -473,14 +478,14 @@ def test_wled_probe_failure_asks_and_can_retry(tmp_path):
 
 
 def test_wled_probe_failure_keep_anyway(tmp_path):
-    answers = ["", "192.0.2.99", "j", "", "", "", ""]
+    answers = ["", "192.0.2.99", "j", "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, device_net())
     assert code == 0, scripted.text
     assert read_config(tmp_path / "config.yaml")["wled"]["base_url"] == "http://192.0.2.99"
 
 
 def test_esphome_404_shows_web_server_hint_and_retries(tmp_path):
-    answers = ["", "", "esp.test", "Falscher Name", "n", "BME280 Temperature", "-", "", "", ""]
+    answers = ["", "", "esp.test", "Falscher Name", "n", "BME280 Temperature", "-", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, device_net())
     assert code == 0, scripted.text
     assert "404" in scripted.text and "web_server:" in scripted.text and "object_id" in scripted.text
@@ -490,7 +495,7 @@ def test_esphome_404_shows_web_server_hint_and_retries(tmp_path):
 
 
 def test_unreachable_esphome_kept_anyway_skips_sensor_probes(tmp_path):
-    answers = ["", "", "esp-aus.test", "j", "Temp", "Feuchte", "", "", ""]
+    answers = ["", "", "esp-aus.test", "j", "Temp", "Feuchte", "", "", *NEW_STEPS, ""]
     code, scripted, net = run_wizard(tmp_path, answers, device_net())
     assert code == 0, scripted.text
     assert not any(r.url.path.startswith("/sensor/") for r in net.requests)
@@ -618,7 +623,7 @@ def test_wizard_with_invalid_existing_wled_url_does_not_abort(tmp_path):
     data["wled"]["base_url"] = "http://192.168.1.300"
     write_yaml(tmp_path / "config.yaml", data)
     # Mit Gerätetest, überall Enter: Die WLED-Probe meldet "Ungültige Adresse" statt abzustürzen.
-    answers = ["j"] + [""] * 9
+    answers = ["j"] + [""] * 9 + NEW_STEPS
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
     assert code == 0, scripted.text
     assert "Ungültige Adresse: http://192.168.1.300/json/info" in scripted.text
@@ -679,7 +684,7 @@ def test_ollama_unavailable(handler):
 def test_wizard_model_choice(tmp_path, answer, expected):
     models = [("gross", 9_000_000_000, ["tools"]), ("klein", 1_000_000_000, ["tools"]),
               ("mittel", 4_000_000_000, ["completion", "tools"]), ("winzig", 100_000_000, ["completion"])]
-    answers = ["n", "", "", "", "x", answer, "", ""]  # "x" ist ungültig → erneute Frage
+    answers = ["n", "", "", "", "x", answer, "", *NEW_STEPS, ""]  # "x" ist ungültig → erneute Frage
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=models))
     assert code == 0, scripted.text
     assert "Nummer aus der Liste" in scripted.text
@@ -690,7 +695,7 @@ def test_wizard_model_choice(tmp_path, answer, expected):
 
 def test_wizard_no_tool_models_keeps_todo(tmp_path):
     models = [("nur-text", 1_000_000, ["completion"])]
-    code, scripted, net = run_wizard(tmp_path, ["n", "", "", "", "", ""], FakeNet(ollama_models=models))
+    code, scripted, net = run_wizard(tmp_path, ["n", "", "", "", "", *NEW_STEPS, ""], FakeNet(ollama_models=models))
     assert code == 0, scripted.text
     assert "keins unterstützt Tools" in scripted.text and "ollama pull" in scripted.text
     assert read_config(tmp_path / "config.yaml")["llm"]["model"] == "TODO_MODELLNAME"
@@ -755,7 +760,7 @@ def test_autohotkey_found_per_user_and_via_path():
 def test_ahk_not_found_asks_for_exe(tmp_path):
     ahk_script = "C:\\Skripte\\cs2.ahk"
     ahk_exe = "D:\\Tools\\AutoHotkey\\AutoHotkey64.exe"
-    answers = ["n", "", "", ahk_script, "D:\\gibts\\nicht.exe", ahk_exe, "", "", "", ""]
+    answers = ["n", "", "", ahk_script, "D:\\gibts\\nicht.exe", ahk_exe, "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p in (ahk_script, ahk_exe))
     assert code == 0, scripted.text
     cs2 = read_config(tmp_path / "config.yaml")["scripts"][0]
@@ -764,7 +769,7 @@ def test_ahk_not_found_asks_for_exe(tmp_path):
 
 
 def test_missing_script_file_is_asked_again(tmp_path):
-    answers = ["n", "", "", "C:\\gibts\\nicht.ps1", "", "", ""]
+    answers = ["n", "", "", "C:\\gibts\\nicht.ps1", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: False)
     assert code == 0, scripted.text
     assert "Datei nicht gefunden: C:\\gibts\\nicht.ps1" in scripted.text
@@ -805,7 +810,7 @@ def test_cs2_script_is_never_opened(tmp_path, monkeypatch):
 
         monkeypatch.setattr(Path, name, guarded_method)
 
-    answers = ["n", "", "", str(script), "", "", "", ""]
+    answers = ["n", "", "", str(script), "", "", "", *NEW_STEPS, ""]
     code, scripted, _ = run_wizard(tmp_path, answers, which=lambda n: "/usr/bin/py")
     assert code == 0, scripted.text
     assert "GEHEIMER_INHALT" not in scripted.text
@@ -877,7 +882,8 @@ def test_info_prints_one_json_line(tmp_path, capsys):
     out = capsys.readouterr().out
     assert out.count("\n") == 1 and out.isascii()
     payload = json.loads(out)
-    assert set(payload) == {"bind", "port", "local_url", "warnings"}
+    assert set(payload) == {"bind", "port", "local_url", "warnings", "desktop_enabled", "vision_model", "tts_enabled",
+                            "stt_enabled", "stt_model", "stt_model_size"}
     assert payload["bind"] == "0.0.0.0" and payload["port"] == 8765
     assert payload["local_url"] == "http://127.0.0.1:8765/"
     assert any("llm.model" in w for w in payload["warnings"])
@@ -890,7 +896,9 @@ def test_info_without_warnings_and_custom_bind(tmp_path, capsys):
     write_yaml(target, data)
     assert sw.main(["info", "--config", str(target)]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload == {"bind": "192.0.2.5", "port": 9000, "local_url": "http://192.0.2.5:9000/", "warnings": []}
+    assert payload == {"bind": "192.0.2.5", "port": 9000, "local_url": "http://192.0.2.5:9000/", "warnings": [],
+                       "desktop_enabled": True, "vision_model": None, "tts_enabled": True, "stt_enabled": False,
+                       "stt_model": "small", "stt_model_size": "ca. 500 MB"}
 
 
 @pytest.mark.parametrize("bind,url", [("0.0.0.0", "http://127.0.0.1:1/"), ("127.0.0.1", "http://127.0.0.1:1/"),
@@ -937,7 +945,7 @@ def test_config_saved_by_notepad_with_bom_and_crlf(tmp_path, capsys):
     target.write_bytes(raw.encode("utf-8"))
     assert sw.main(["info", "--config", str(target)]) == 0
     assert json.loads(capsys.readouterr().out)["port"] == 9000
-    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", "", "", ""],
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", "", "", "", *NEW_STEPS],
                                    FakeNet(ollama_models=ollama_with_current()))
     assert code == 0 and "Keine Änderungen" in scripted.text
 
@@ -950,7 +958,7 @@ def test_kept_value_with_failed_probe_defaults_to_keep(tmp_path):
     write_yaml(tmp_path / "config.yaml", data)
     # Test ja | WLED Enter, Probe scheitert, Enter = behalten | ESP Enter (ok) | 2x Entität Enter, 404, Enter
     # | CS2, Modell, Port
-    answers = [""] * 11
+    answers = [""] * 11 + NEW_STEPS
     code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(
         {("esp.test", "/"): httpx.Response(200)}, ollama_models=ollama_with_current(),
         host_defaults={"esp.test": 404}))
@@ -958,3 +966,294 @@ def test_kept_value_with_failed_probe_defaults_to_keep(tmp_path):
     assert scripted.answers == []
     assert any("trotzdem übernehmen? [J/n]" in p for p in scripted.prompts)
     assert "Keine Änderungen" in scripted.text
+
+
+# --------------------------------------------------------------------------------------------
+# Schritte 6–8: Vision-Modell, PC-Steuerung, Stimme
+# --------------------------------------------------------------------------------------------
+
+VISION_MODELS = [
+    ("gross-vl", 9_000_000_000, ["completion", "vision"]),
+    ("chat-tools", 2_000_000_000, ["completion", "tools"]),
+    ("klein-vl", 3_000_000_000, ["completion", "vision", "tools"]),
+]
+
+
+def test_ollama_vision_models_sorted_smallest_first():
+    with mock_client(ollama_handler(VISION_MODELS + [("kaputt", 1, ["vision"])], show_fails={"kaputt"})) as c:
+        found = list_models(c, "http://ollama.test")
+    assert [m.name for m in vision_models(found)] == ["klein-vl", "gross-vl"]
+    assert [m.supports_vision for m in found] == [True, False, True, False]
+
+
+@pytest.mark.parametrize("answer,expected", [("", "klein-vl"), ("2", "gross-vl"), ("gross-vl", "gross-vl"),
+                                             ("-", "TODO_VISIONMODELL")])
+def test_vision_model_choice(tmp_path, answer, expected):
+    # Schritt 4 (Modell): Enter = chat-tools; Schritt 6: "x" ungültig, dann die Antwort.
+    answers = ["n", "", "", "", "", "", "x", answer, *NEW_STEPS, ""]
+    code, scripted, net = run_wizard(tmp_path, answers, FakeNet(ollama_models=VISION_MODELS))
+    assert code == 0, scripted.text
+    assert scripted.answers == []
+    cfg = read_config(tmp_path / "config.yaml")
+    assert cfg["llm"]["model"] == "chat-tools"
+    assert cfg["vision"]["model"] == expected
+    out = scripted.text
+    assert out.index("1) klein-vl") < out.index("2) gross-vl")
+    assert "klein-vl  (3.0 GB) – kann auch Tools" in out
+    assert "chat-tools" not in out.split("Schritt 6/8")[1].split("Schritt 7/8")[0]  # kein Vision-Modell
+    assert "Nummer aus der Liste" in out
+    # Ollama wird nur einmal gefragt (Liste gilt für Schritt 4 und 6).
+    assert [r.url.path for r in net.requests].count("/api/tags") == 1
+    if expected != "TODO_VISIONMODELL":
+        assert re.search(rf"Bildschirm:\s+{expected}\n", out)
+
+
+def test_vision_default_is_chat_model_when_it_can_see(tmp_path):
+    """Kann llm.model auch Bilder, ist es die Vorgabe (kein zusätzlicher VRAM)."""
+    data = custom_existing()
+    data["llm"]["model"] = "klein-vl"
+    data["vision"] = {"model": "TODO_VISIONMODELL", "max_side": 1024, "jpeg_quality": 70, "monitor": 2, "timeout": 30}
+    write_yaml(tmp_path / "config.yaml", data)
+    answers = ["n", "", "", "", "", "", "", "", "", *NEW_STEPS, ""]  # ... Modell Enter, Port Enter, Vision Enter
+    code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=VISION_MODELS))
+    assert code == 0, scripted.text
+    assert "= llm.model, kein zusätzlicher VRAM" in scripted.text
+    cfg = read_config(tmp_path / "config.yaml")
+    assert cfg["vision"] == {"model": "klein-vl", "max_side": 1024, "jpeg_quality": 70, "monitor": 2, "timeout": 30}
+
+
+def test_vision_without_ollama_or_vision_models_asks_nothing(tmp_path):
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", *NEW_STEPS, ""])
+    assert code == 0, scripted.text
+    assert "Ollama ist nicht erreichbar – vision.model bleibt: nicht eingerichtet" in scripted.text
+    models = [("nur-text", 1_000_000, ["completion", "tools"])]
+    code, scripted, _ = run_wizard(tmp_path / "b", ["n", "", "", "", "", "", *NEW_STEPS, ""],
+                                   FakeNet(ollama_models=models))
+    assert code == 0, scripted.text
+    assert "keins versteht Bilder" in scripted.text and "ollama pull" in scripted.text
+    assert read_config(tmp_path / "b" / "config.yaml")["vision"]["model"] == "TODO_VISIONMODELL"
+
+
+def test_vision_warns_when_ollama_is_not_local(tmp_path):
+    data = custom_existing()
+    data["llm"]["base_url"] = "http://192.0.2.7:11434"
+    write_yaml(tmp_path / "config.yaml", data)
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", "", "", *NEW_STEPS])
+    assert code == 0, scripted.text
+    assert "zeigt nicht auf diesen PC" in scripted.text and "gesperrt" in scripted.text
+
+
+def test_desktop_can_be_switched_off(tmp_path):
+    answers = ["n", "", "", "", "", "n", "", "", ""]  # ..., Port, PC-Steuerung = n, Sprachausgabe, Spracheingabe, Speichern
+    code, scripted, _ = run_wizard(tmp_path, answers)
+    assert code == 0, scripted.text
+    assert scripted.answers == []
+    cfg = read_config(tmp_path / "config.yaml")
+    assert cfg["desktop"]["enabled"] is False
+    assert cfg["desktop"]["apps"] == example_dump()["desktop"]["apps"]  # Liste bleibt erhalten
+    assert re.search(r"PC-Steuerung:\s+aus\n", scripted.text)
+    assert "keine freie Maus-/Tastatursteuerung" in scripted.text.replace("\n", " ")
+
+
+WIN_ENV = {
+    "APPDATA": "C:\\Users\\Max\\AppData\\Roaming",
+    "LOCALAPPDATA": "C:\\Users\\Max\\AppData\\Local",
+    "ProgramFiles": "C:\\Program Files",
+    "ProgramFiles(x86)": "C:\\Program Files (x86)",
+}
+SPOTIFY = "C:\\Users\\Max\\AppData\\Roaming\\Spotify\\Spotify.exe"
+DISCORD = "C:\\Users\\Max\\AppData\\Local\\Discord\\Update.exe"
+STEAM = "C:\\Program Files (x86)\\Steam\\steam.exe"
+GAME = "D:\\Spiele\\Mein Spiel (2024)\\Spiel-Ä.exe"
+
+
+def test_desktop_found_and_custom_apps(tmp_path):
+    files = {SPOTIFY, DISCORD, STEAM, GAME, "C:\\Windows\\explorer.exe"}
+    answers = [
+        "n", "", "", "", "",          # kein Test, WLED, ESP, CS2, Port
+        "",                           # PC-Steuerung an
+        "", "n", "",                  # Gefunden: Spotify ja, Discord nein, Steam ja
+        "C:\\Programme\\notiz.txt",   # keine .exe
+        "D:\\fehlt.exe",              # gibt es nicht
+        "C:\\Windows\\explorer.exe",  # geschützter Prozess
+        STEAM,                        # schon in der Liste
+        f'"{GAME}"',                  # eigenes Programm (mit Anführungszeichen wie "Als Pfad kopieren")
+        "Mein Spiel",                 # Name in der Oberfläche
+        "",                           # fertig
+        "", "",                       # Sprachausgabe, Spracheingabe
+        "",                           # Speichern
+    ]
+    code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p in files, env=WIN_ENV)
+    assert code == 0, scripted.text
+    assert scripted.answers == []
+    apps = read_config(tmp_path / "config.yaml")["desktop"]["apps"]
+    assert [a["id"] for a in apps] == ["editor", "rechner", "spotify", "steam", "spiel-ae"]
+    assert apps[2] == {"id": "spotify", "label": "Spotify", "command": [SPOTIFY], "process_name": "Spotify.exe",
+                       "window_title": "Spotify"}
+    assert apps[3]["command"] == [STEAM] and apps[3]["process_name"] == "steam.exe"
+    assert apps[4] == {"id": "spiel-ae", "label": "Mein Spiel", "command": [GAME], "process_name": "Spiel-Ä.exe",
+                       "window_title": "Mein Spiel"}
+    out = scripted.text
+    assert "Gefunden: Discord" in "\n".join(scripted.prompts)
+    assert ".exe-Datei" in out and "Datei nicht gefunden: D:\\fehlt.exe" in out
+    assert "System-, Shell- oder JARVIS-Prozess" in out
+    assert "steam.exe ist schon in der Liste" in out
+    assert re.search(r"PC-Steuerung:\s+an – Editor, Rechner, Spotify, Steam, Mein Spiel\n", out)
+
+
+def test_desktop_discord_uses_its_updater(tmp_path):
+    answers = ["n", "", "", "", "", "", "", "", "", "", ""]
+    code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p == DISCORD, env=WIN_ENV)
+    assert code == 0, scripted.text
+    discord = read_config(tmp_path / "config.yaml")["desktop"]["apps"][-1]
+    assert discord["command"] == [DISCORD, "--processStart", "Discord.exe"]
+    assert discord["process_name"] == "Discord.exe"
+
+
+@pytest.mark.parametrize("apps,answer,expected", [
+    ([], "", ["editor", "rechner"]),                       # leere Liste: Vorschlag ja
+    ("only-editor", "", ["editor"]),                        # einzelne fehlen: wohl absichtlich, Vorschlag nein
+    ("only-editor", "j", ["editor", "rechner"]),
+])
+def test_desktop_offers_missing_default_apps(tmp_path, apps, answer, expected):
+    data = custom_existing()
+    if apps == "only-editor":
+        apps = [a for a in example_config_dict()["desktop"]["apps"] if a["id"] == "editor"]
+    data["desktop"]["apps"] = apps
+    write_yaml(tmp_path / "config.yaml", data)
+    answers = ["n", "", "", "", "", "", "", "", "", answer, "", "", "", ""]
+    code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current()))
+    assert code == 0, scripted.text
+    assert any("Standard-Programme hinzufügen" in p for p in scripted.prompts)
+    assert [a["id"] for a in read_config(tmp_path / "config.yaml")["desktop"]["apps"]] == expected
+
+
+def test_voice_choices(tmp_path):
+    answers = ["n", "", "", "", "", "",  # ..., PC-Steuerung
+               "",                       # kein weiteres Programm
+               "n",                      # Sprachausgabe aus
+               "j",                      # Spracheingabe an
+               "riesig", "base",         # Modell: ungültig, dann base
+               ""]                       # Speichern
+    code, scripted, _ = run_wizard(tmp_path, answers)
+    assert code == 0, scripted.text
+    assert scripted.answers == []
+    voice = read_config(tmp_path / "config.yaml")["voice"]
+    assert voice["tts"]["enabled"] is False and voice["tts"]["speak_replies"] is True
+    assert voice["stt"]["enabled"] is True and voice["stt"]["model"] == "base"
+    assert voice["stt"]["device"] == "cpu" and voice["stt"]["language"] == "de"
+    out = scripted.text
+    assert any("Spracheingabe einschalten (Modell-Download ca. 500 MB)?" in p for p in scripted.prompts)
+    assert "Bitte einen dieser Namen eingeben" in out
+    assert re.search(r"Sprachausgabe:\s+aus\n", out) and re.search(r"Spracheingabe:\s+an \(Whisper-Modell base\)", out)
+    assert "python.exe -m app.voice.stt --download --config config.yaml" in out  # Hinweis nach dem Speichern
+    assert "HTTPS" in out
+
+
+def test_voice_and_other_unasked_values_are_preserved(tmp_path):
+    """Werte, die der Assistent nicht abfragt (Stimme, Lautstärke, Domains, Monitor ...), bleiben unverändert."""
+    data = custom_existing()
+    data["desktop"]["allowed_domains"] = ["youtube.com", "wikipedia.org"]
+    data["desktop"]["allow_open_url"] = False
+    data["vision"].update({"model": "klein-vl", "max_side": 800, "monitor": 0})
+    data["voice"]["tts"].update({"voice": "Microsoft Hedda Desktop", "rate": -3, "volume": 55, "speak_replies": False})
+    data["voice"]["stt"].update({"enabled": True, "model": "C:\\Modelle\\whisper-de", "language": "",
+                                 "max_seconds": 12, "download_root": "D:\\Whisper", "compute_type": "float32"})
+    write_yaml(tmp_path / "config.yaml", data)
+    before = read_config(tmp_path / "config.yaml")
+    # WLED ändern, sonst überall Enter (Spracheingabe an -> Modellfrage, Enter behält den eigenen Ordner)
+    answers = ["n", "wled3.test", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+    code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current() + VISION_MODELS[:1]))
+    assert code == 0, scripted.text
+    assert scripted.answers == []
+    after = read_config(tmp_path / "config.yaml")
+    assert after["wled"]["base_url"] == "http://wled3.test"
+    after["wled"]["base_url"] = before["wled"]["base_url"]
+    # vision.model: 'klein-vl' ist hier nicht installiert -> Vorgabe wäre gross-vl; Enter übernimmt das
+    assert after["vision"]["model"] == "gross-vl"
+    after["vision"]["model"] = before["vision"]["model"]
+    assert after == before
+
+
+def test_old_config_without_new_sections_loads_and_stays_untouched(tmp_path):
+    """config.yaml von Version 0.2.0 (ohne desktop/vision/voice): Enter überall ändert nichts an der Datei."""
+    data = custom_existing()
+    for section in ("desktop", "vision", "voice"):
+        data.pop(section)
+    original = write_yaml(tmp_path / "config.yaml", data)
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", "", "", "", *NEW_STEPS],
+                                   FakeNet(ollama_models=ollama_with_current()))
+    assert code == 0, scripted.text
+    assert "Keine Änderungen" in scripted.text
+    assert (tmp_path / "config.yaml").read_bytes() == original
+    # Mit einer Änderung kommen die neuen Abschnitte (Standardwerte) dazu.
+    code, scripted, _ = run_wizard(tmp_path, ["n", "", "", "", "", "", "", "", "", "", "", "j", "", ""],
+                                   FakeNet(ollama_models=ollama_with_current()))
+    assert code == 0, scripted.text
+    cfg = read_config(tmp_path / "config.yaml")
+    assert cfg["voice"]["stt"]["enabled"] is True
+    assert cfg["desktop"] == example_dump()["desktop"]
+    text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "KEINE freie\n# Maus-/Tastatursteuerung" in text and "Bildschirmfoto geht NUR an das lokale Ollama" in text
+
+
+def test_render_round_trips_desktop_apps():
+    data = example_dump()
+    data["desktop"]["apps"].append({"id": "x-1", "label": 'Spiel "Ä" #1', "command": [GAME, "--x=\"y\"", "-"],
+                                    "process_name": "Spiel-Ä.exe", "window_title": "# kein Kommentar"})
+    data["desktop"]["allowed_domains"] = ["bücher.de", "youtube.com"]
+    text = sw.checked_render(data)
+    assert read_config_text(text) == parse_config(data).model_dump()
+    assert "allowed_domains: [\"xn--bcher-kva.de\", \"youtube.com\"]" in sw.render_config(parse_config(data).model_dump())
+
+
+@pytest.mark.parametrize("label,expected", [("Spotify", "spotify"), ("Mein Spiel (2024)", "mein-spiel-2024"),
+                                            ("Größe", "groesse"), ("___", "programm"), ("x" * 50, "x" * 32),
+                                            ("-Start", "start")])
+def test_app_id_from(label, expected):
+    assert sw.app_id_from(label, []) == expected
+
+
+def test_app_id_is_unique():
+    apps = [{"id": "spiel", "process_name": "a.exe"}, {"id": "spiel-2", "process_name": "b.exe"}]
+    assert sw.app_id_from("Spiel", apps) == "spiel-3"
+    entry = sw.app_entry_for_exe("C:\\Spiele\\Spiel.exe", apps)
+    assert entry["id"] == "spiel-3" and entry["process_name"] == "Spiel.exe" and entry["command"] == ["C:\\Spiele\\Spiel.exe"]
+
+
+def test_known_app_candidates_use_environment_only():
+    spotify = next(k for k in sw.KNOWN_APPS if k.id == "spotify")
+    assert spotify.candidates({}) == []
+    assert spotify.candidates(WIN_ENV) == [SPOTIFY]
+    for known in sw.KNOWN_APPS:  # jeder Vorschlag ist eine gültige Konfiguration
+        entry = known.entry("C:\\X\\" + known.process_name, [])
+        parse_config({"desktop": {"apps": [entry]}})
+
+
+def test_info_reports_voice_and_vision(tmp_path, capsys):
+    data = custom_existing()
+    data["vision"]["model"] = "klein-vl"
+    data["voice"]["stt"].update({"enabled": True, "model": "base"})
+    data["desktop"]["enabled"] = False
+    target = tmp_path / "config.yaml"
+    write_yaml(target, data)
+    assert sw.main(["info", "--config", str(target)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["vision_model"] == "klein-vl" and payload["stt_enabled"] is True and payload["stt_model"] == "base"
+    assert payload["stt_model_size"] == "ca. 145 MB" and payload["vision_model"] == "klein-vl"
+    assert payload["desktop_enabled"] is False and payload["tts_enabled"] is True
+
+
+def test_wizard_never_downloads_or_starts_programs(tmp_path, monkeypatch):
+    """Spracheingabe an: der Assistent lädt nichts (kein Whisper, kein pip) und startet kein Programm."""
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f"verboten: {args!r}")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    import app.voice.stt as stt_module
+    monkeypatch.setattr(stt_module, "download", forbidden)
+    answers = ["n", "", "", "", "", "", "", "", "", "j", "", ""]
+    code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p == SPOTIFY, env=WIN_ENV)
+    assert code == 0, scripted.text
+    assert read_config(tmp_path / "config.yaml")["voice"]["stt"]["enabled"] is True

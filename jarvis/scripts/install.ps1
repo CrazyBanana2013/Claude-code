@@ -13,6 +13,8 @@
     -NoShortcuts      keine Startmenue-Eintraege anlegen
     -InstallUv        Zustimmung: uv bei Bedarf von astral.sh laden und installieren
     -NoUv             uv nicht verwenden (python -m venv + pip mit requirements.txt)
+    -InstallVoice     Zustimmung: fuer die Spracheingabe (nur wenn in config.yaml eingeschaltet) das
+                      Zusatzpaket faster-whisper (pypi.org) und das Whisper-Modell (Hugging Face) laden
     -AllowAdmin       trotz Adminrechten fortfahren (nicht empfohlen)
     -AllowNonWindows  nur fuer Tests: unter pwsh auf Linux/macOS ausfuehren
 
@@ -29,6 +31,7 @@ param(
     [switch]$NoShortcuts,
     [switch]$InstallUv,
     [switch]$NoUv,
+    [switch]$InstallVoice,
     [switch]$AllowAdmin,
     [switch]$AllowNonWindows,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$UnknownArgs
@@ -37,19 +40,21 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-lib.ps1')
 
-$TotalSteps = 10
+$TotalSteps = 11
 $script:source = $null
 $script:version = '0.0.0'
 $script:files = @()
 $script:shortcuts = @()
 $script:autostart = $null
 $script:pythonEnv = $null
+$script:extras = @()
 $script:preexisting = @()
 $script:completed = $false
 
 function Save-InstallManifest {
     $m = New-JarvisManifest -Version $script:version -Source $script:source -Files $script:files `
-        -Shortcuts $script:shortcuts -Autostart $script:autostart -PythonEnv $script:pythonEnv -Preexisting $script:preexisting
+        -Shortcuts $script:shortcuts -Autostart $script:autostart -PythonEnv $script:pythonEnv -Preexisting $script:preexisting `
+        -PythonExtras $script:extras
     Write-JarvisManifest -Target $script:Target -Manifest $m
 }
 
@@ -63,7 +68,7 @@ function Test-InstallerPreparedError {
 
 function Write-InstallSummary {
     param([string]$LocalUrl, [int]$Port, [string]$Bind, [string[]]$Warnings, [bool]$Running, [bool]$StartTried,
-        [bool]$OtherServer, [bool]$TokenCreated)
+        [bool]$OtherServer, [bool]$TokenCreated, $Info, [string]$VoiceState)
     $onWindows = Test-JarvisWindows
     Write-Host ''
     if ($StartTried -and -not $Running -and -not $OtherServer) {
@@ -107,6 +112,24 @@ function Write-InstallSummary {
     Write-Host '                   nach Aenderungen per Notepad JARVIS neu starten (Startmenue: beenden, dann starten).'
     if ($onWindows) {
         Write-Host ('Modell waehlen:    "{0}" "{1}"' -f (Get-JarvisVenvPython -Target $script:Target), (Join-Path (Join-Path $script:Target 'scripts') 'pick_model.py'))
+    }
+    if ($Info) {
+        $vision = 'nicht eingerichtet (README, Abschnitt 10 "Bildschirm beschreiben")'
+        if ($Info.vision_model) { $vision = 'Vision-Modell ' + [string]$Info.vision_model }
+        Write-Host ('Bildschirm:        {0}' -f $vision)
+        $tts = 'aus'
+        if ($Info.tts_enabled -eq $true) { $tts = 'an' }
+        $stt = 'aus'
+        if ($Info.stt_enabled -eq $true) {
+            $stt = 'an (Whisper-Modell {0})' -f $Info.stt_model
+            if ($VoiceState -eq 'no-package') { $stt = 'an, aber das Zusatzpaket fehlt (Install.cmd erneut starten)' }
+            if ($VoiceState -eq 'no-model') { $stt = 'an, aber das Whisper-Modell fehlt (siehe Schritt 7)' }
+            if ($VoiceState -eq 'error') { $stt = 'an, aber nicht bereit (siehe Schritt 7)' }
+        }
+        Write-Host ('Stimme:            Sprachausgabe {0}, Spracheingabe {1}' -f $tts, $stt)
+        if ($Info.stt_enabled -eq $true) {
+            Write-Host 'Mikrofon am Handy: geht nur ueber HTTPS - README, Abschnitt 12 "Spracheingabe am Handy (Tailscale HTTPS)".'
+        }
     }
     if (-not $Running) {
         if (@($script:shortcuts).Count -gt 0) {
@@ -284,12 +307,14 @@ try {
         $script:autostart = [string]$oldManifest.autostart
     }
     if ($oldManifest -and $oldManifest.python_env) { $script:pythonEnv = [string]$oldManifest.python_env }
+    $script:extras = @(Get-JarvisManifestList $oldManifest 'python_extras')
     Save-InstallManifest
     Write-JarvisInfo ('Version {0}, Marker: {1}' -f $script:version, (Get-JarvisManifestPath $script:Target))
 
     # 4 ----------------------------------------------------------------------------------
     Write-JarvisStep 4 $TotalSteps 'Python-Umgebung einrichten (.venv)'
-    $script:pythonEnv = Initialize-JarvisPythonEnvironment -Target $script:Target -AssumeYes:$Yes -InstallUv:$InstallUv -NoUv:$NoUv
+    $script:pythonEnv = Initialize-JarvisPythonEnvironment -Target $script:Target -AssumeYes:$Yes -InstallUv:$InstallUv -NoUv:$NoUv `
+        -Extras $script:extras
     $python = Get-JarvisVenvPython -Target $script:Target
     if (-not [System.IO.File]::Exists($python)) { throw ('Python der venv fehlt: {0}' -f $python) }
     Save-InstallManifest
@@ -332,6 +357,10 @@ try {
         Write-JarvisOk ('config.yaml angelegt: ' + $configPath)
     } else {
         Write-JarvisInfo 'config.yaml ist vorhanden und bleibt erhalten.'
+        if (-not (Test-JarvisConfigHasSection -Path $configPath -Name 'voice')) {
+            Write-JarvisInfo ('Neu: Bildschirm beschreiben, PC-Steuerung und Stimme - einrichten mit "Konfiguration ' +
+                'jetzt anpassen?" = j (Schritte 6 bis 8 des Assistenten). Ohne Anpassung gelten die Vorgaben.')
+        }
         $adjust = $false
         if (-not $Yes) { $adjust = Read-JarvisYesNo 'Konfiguration jetzt anpassen?' -Default $false }
         if ($adjust) {
@@ -381,7 +410,15 @@ try {
     if (-not $localUrl.EndsWith('/')) { $localUrl = $localUrl + '/' }
 
     # 7 ----------------------------------------------------------------------------------
-    Write-JarvisStep 7 $TotalSteps 'Startmenue-Eintraege'
+    Write-JarvisStep 7 $TotalSteps 'Spracheingabe (optional)'
+    $hadVoice = @($script:extras) -contains 'voice'
+    $voice = Initialize-JarvisVoice -Python $python -Target $script:Target -PythonEnv $script:pythonEnv -Info $info `
+        -AssumeYes:$Yes -InstallVoice:$InstallVoice -PreviouslyInstalled:$hadVoice
+    $script:extras = @($voice.Extras)
+    Save-InstallManifest
+
+    # 8 ----------------------------------------------------------------------------------
+    Write-JarvisStep 8 $TotalSteps 'Startmenue-Eintraege'
     if ($NoShortcuts) {
         Write-JarvisInfo 'Uebersprungen (-NoShortcuts).'
     } elseif (-not $onWindows) {
@@ -396,8 +433,8 @@ try {
     }
     Save-InstallManifest
 
-    # 8 ----------------------------------------------------------------------------------
-    Write-JarvisStep 8 $TotalSteps 'Autostart'
+    # 9 ----------------------------------------------------------------------------------
+    Write-JarvisStep 9 $TotalSteps 'Autostart'
     $autostartScript = Join-Path (Join-Path $script:Target 'scripts') 'install_autostart.ps1'
     if ($NoAutostart) {
         Write-JarvisInfo 'Uebersprungen (-NoAutostart).'
@@ -426,8 +463,8 @@ try {
     }
     Save-InstallManifest
 
-    # 9 ----------------------------------------------------------------------------------
-    Write-JarvisStep 9 $TotalSteps 'JARVIS starten'
+    # 10 ---------------------------------------------------------------------------------
+    Write-JarvisStep 10 $TotalSteps 'JARVIS starten'
     $healthUrl = $localUrl + 'api/health'
     $running = $false
     $startTried = $false
@@ -465,12 +502,12 @@ try {
         }
     }
 
-    # 10 ---------------------------------------------------------------------------------
-    Write-JarvisStep 10 $TotalSteps 'Abschluss'
+    # 11 ---------------------------------------------------------------------------------
+    Write-JarvisStep 11 $TotalSteps 'Abschluss'
     Save-InstallManifest
     Write-JarvisOk ('Installationsmarker geschrieben: ' + (Get-JarvisManifestPath $script:Target))
     Write-InstallSummary -LocalUrl $localUrl -Port $port -Bind $bind -Warnings $warnings -Running $running `
-        -StartTried $startTried -OtherServer $otherServer -TokenCreated $tokenCreated
+        -StartTried $startTried -OtherServer $otherServer -TokenCreated $tokenCreated -Info $info -VoiceState $voice.State
     $script:completed = $true
 } catch [System.OperationCanceledException] {
     Write-Host ''

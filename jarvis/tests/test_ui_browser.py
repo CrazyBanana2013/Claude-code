@@ -184,6 +184,11 @@ def _write_config(tmp_path: Path, port: int, fake_url: str) -> dict[str, str]:
             {"id": "cs2", "label": "CS2-Skript", "cwd": "TODO_ORDNER_DES_CS2_SKRIPTS",
              "command": ["TODO_PROGRAMM", "TODO_ARGUMENT"]},
         ],
+        # Stimme aus: auf dem Windows-PC würde sonst jede Chat-Antwort des Tests laut vorgelesen.
+        # Spracheingabe/Vision bleiben aus (Standard) – der Browser-Test simuliert beides per Route-Mock.
+        "voice": {"tts": {"enabled": False}, "stt": {"enabled": False}},
+        # desktop bleibt an (Standard-Apps editor/rechner): unter Linux verweigert der Server jede Aktion,
+        # unter Windows fängt das Sicherheitsnetz in hud.test.mjs alle schaltenden desktop_*-Aufrufe ab.
     }
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
     (tmp_path / "secrets.yaml").write_text(yaml.safe_dump({"api_token": TOKEN}), encoding="utf-8")

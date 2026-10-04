@@ -206,3 +206,20 @@ def test_readme_toc_and_installer_section_references_match_headings():
     assert refs, "Installer verweist auf README-Abschnitte"
     for number, name in refs:
         assert headings.get(number, "").startswith(name.split()[0]), (number, name, headings.get(number))
+
+
+def _github_slug(heading: str) -> str:
+    """Anker wie auf GitHub: klein, Satzzeichen weg (Buchstaben/Ziffern/_/- bleiben), Leerzeichen -> '-'."""
+    text = re.sub(r"`", "", heading.strip().lower())
+    text = re.sub(r"[^\w\- ]", "", text)
+    return text.replace(" ", "-")
+
+
+def test_readme_internal_links_resolve():
+    """Alle Verweise der Form [..](#anker) in der README zeigen auf eine vorhandene Überschrift."""
+    readme = (PROJECT_DIR / "README.md").read_text(encoding="utf-8")
+    anchors = {_github_slug(h) for h in re.findall(r"(?m)^#{1,6} (.+)$", readme)}
+    links = set(re.findall(r"\]\(#([^)]+)\)", readme))
+    assert links, "README enthält interne Verweise"
+    missing = sorted(link for link in links if link not in anchors)
+    assert not missing, missing

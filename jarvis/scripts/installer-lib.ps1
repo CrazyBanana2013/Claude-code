@@ -1006,7 +1006,8 @@ function New-JarvisManifest {
         [string[]]$Shortcuts = @(),
         [string]$Autostart,
         [string]$PythonEnv,
-        [string[]]$Preexisting = @()
+        [string[]]$Preexisting = @(),
+        [string[]]$PythonExtras = @()
     )
     $m = [ordered]@{}
     $m['version'] = $Version
@@ -1019,6 +1020,8 @@ function New-JarvisManifest {
     $m['venv'] = '.venv'
     $m['python_env'] = $null
     if ($PythonEnv) { $m['python_env'] = $PythonEnv }
+    # Installierte Zusatzpakete aus pyproject.toml (z. B. 'voice' fuer die Spracheingabe) - nur nach Zustimmung.
+    $m['python_extras'] = [string[]]@($PythonExtras | Where-Object { $_ })
     # Benutzerdaten (config.yaml, secrets.yaml, state ...), die schon VOR der ersten Installation im
     # Ordner lagen: Sie gehoeren nicht dem Installer und werden auch mit -Purge nie geloescht.
     $m['preexisting'] = [string[]]@($Preexisting | Where-Object { $_ })
@@ -1293,13 +1296,17 @@ function Install-JarvisUv {
 }
 
 function Get-JarvisUvSyncArguments {
-    return @('sync', '--frozen', '--no-dev')
+    # -Extras: optionale Paketgruppen aus pyproject.toml ([project.optional-dependencies]), z. B. 'voice'.
+    param([string[]]$Extras = @())
+    $list = @('sync', '--frozen', '--no-dev')
+    foreach ($e in @($Extras | Where-Object { $_ })) { $list += @('--extra', [string]$e) }
+    return $list
 }
 
 function Invoke-JarvisUvSync {
-    param([string]$Uv, [string]$Target)
+    param([string]$Uv, [string]$Target, [string[]]$Extras = @())
     $envVars = @{ UV_PROJECT_ENVIRONMENT = (Get-JarvisVenvDir $Target) }
-    return (Invoke-JarvisProcess -FilePath $Uv -ArgumentList (Get-JarvisUvSyncArguments) -WorkingDirectory $Target -Environment $envVars)
+    return (Invoke-JarvisProcess -FilePath $Uv -ArgumentList (Get-JarvisUvSyncArguments -Extras $Extras) -WorkingDirectory $Target -Environment $envVars)
 }
 
 function Get-JarvisPythonCandidates {
@@ -1411,7 +1418,10 @@ function Get-JarvisVenvHome {
 
 function Initialize-JarvisPythonEnvironment {
     # Legt Target\.venv an. Liefert 'uv' oder 'pip'.
-    param([string]$Target, [switch]$AssumeYes, [switch]$InstallUv, [switch]$NoUv)
+    # -Extras: Zusatzpakete, die schon installiert waren (Marker "python_extras", z. B. 'voice'). uv sync
+    # entfernt alles, was nicht angefordert ist - deshalb hier mit angeben. Der pip-Weg legt die venv neu an;
+    # fehlende Zusatzpakete installiert danach Initialize-JarvisVoice (mit der frueheren Zustimmung).
+    param([string]$Target, [switch]$AssumeYes, [switch]$InstallUv, [switch]$NoUv, [string[]]$Extras = @())
     $venv = Get-JarvisVenvDir $Target
     if (Test-JarvisReparsePoint $venv) {
         throw ("'{0}' ist ein Link/Junction. Bitte selbst entfernen - der Installer veraendert nichts ausserhalb des Installationsordners." -f $venv)
@@ -1461,8 +1471,15 @@ function Initialize-JarvisPythonEnvironment {
         }
     }
     if ($uv) {
-        Write-JarvisInfo 'uv sync --frozen --no-dev (Pakete aus uv.lock nach .venv; fehlt ein passendes Python, laedt uv es von GitHub) ...'
-        $rc = Invoke-JarvisUvSync -Uv $uv.Path -Target $Target
+        $extraList = @($Extras | Where-Object { $_ })
+        $syncText = 'uv ' + ((Get-JarvisUvSyncArguments -Extras $extraList) -join ' ')
+        Write-JarvisInfo ($syncText + ' (Pakete aus uv.lock nach .venv; fehlt ein passendes Python, laedt uv es von GitHub) ...')
+        $rc = Invoke-JarvisUvSync -Uv $uv.Path -Target $Target -Extras $extraList
+        if ($rc -ne 0 -and $extraList.Count -gt 0) {
+            Write-JarvisWarn (('{0} ist fehlgeschlagen (Exitcode {1}) - versuche es ohne Zusatzpakete; die Spracheingabe ' +
+                    'wird gleich in einem eigenen Schritt erneut eingerichtet.') -f $syncText, $rc)
+            $rc = Invoke-JarvisUvSync -Uv $uv.Path -Target $Target
+        }
         if ($rc -eq 0 -and [System.IO.File]::Exists((Get-JarvisVenvPython -Target $Target))) {
             Write-JarvisOk 'Python-Umgebung mit uv eingerichtet.'
             return 'uv'
@@ -1497,6 +1514,153 @@ function Initialize-JarvisPythonEnvironment {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Spracheingabe (optional): Zusatzpaket faster-whisper (Extra "voice") und Whisper-Modell
+# ---------------------------------------------------------------------------------------------
+
+function Get-JarvisVoiceArguments {
+    # Kommandozeile des Sprach-Moduls (app/voice/stt.py): --check = Exit 0 Modell da, 1 Modell fehlt,
+    # 2 Fehler (config.yaml, unbekanntes Modell), 3 Paket faster-whisper fehlt; --download laedt das Modell.
+    param([string]$Target, [ValidateSet('check', 'download')][string]$Action)
+    return @('-m', 'app.voice.stt', ('--' + $Action), '--config', (Join-Path $Target 'config.yaml'))
+}
+
+function Invoke-JarvisVoiceCheck {
+    param([string]$Python, [string]$Target)
+    return (Invoke-JarvisCapture -FilePath $Python -ArgumentList (Get-JarvisVoiceArguments -Target $Target -Action 'check') `
+            -WorkingDirectory $Target -TimeoutSec 120)
+}
+
+function Get-JarvisVoiceMessage {
+    # Erste nicht leere Zeile aus Ausgabe/Fehlertext des Sprach-Moduls (fuer Hinweise).
+    param($Result)
+    foreach ($line in @(@($Result.Output) + @(([string]$Result.ErrorText) -split "`r?`n"))) {
+        if ($line -and $line.Trim()) { return $line.Trim() }
+    }
+    return ''
+}
+
+function Get-JarvisVoicePipCommand {
+    # pip-Weg: requirements-voice.txt (uv export --extra voice, mit Hashes) enthaelt alle Pakete inkl. faster-whisper.
+    param([string]$Target)
+    $python = Get-JarvisVenvPython -Target $Target
+    $pipArgs = @('-m', 'pip', 'install', '--require-hashes', '--no-input', '--disable-pip-version-check', '-r',
+        (Join-Path $Target 'requirements-voice.txt'))
+    return [pscustomobject]@{ FilePath = $python; ArgumentList = $pipArgs; Display = (Format-JarvisCommand $python $pipArgs) }
+}
+
+function Install-JarvisVoicePackage {
+    # Zusatzpaket in die venv: mit uv "uv sync --frozen --no-dev --extra voice", sonst pip mit requirements-voice.txt.
+    # Nur nach Zustimmung aufrufen! Liefert den Exitcode.
+    param([string]$Target, [string]$PythonEnv)
+    if ($PythonEnv -eq 'uv') {
+        $uv = Find-JarvisUv
+        if ($uv) {
+            Write-JarvisInfo ('> uv ' + ((Get-JarvisUvSyncArguments -Extras @('voice')) -join ' '))
+            return (Invoke-JarvisUvSync -Uv $uv.Path -Target $Target -Extras @('voice'))
+        }
+        Write-JarvisWarn 'uv wurde nicht mehr gefunden - versuche pip mit requirements-voice.txt.'
+    }
+    if (-not [System.IO.File]::Exists((Join-Path $Target 'requirements-voice.txt'))) {
+        Write-JarvisWarn 'requirements-voice.txt fehlt im Installationsordner - bitte das Installationspaket neu entpacken.'
+        return 2
+    }
+    $cmd = Get-JarvisVoicePipCommand -Target $Target
+    Write-JarvisInfo ('> ' + $cmd.Display)
+    return (Invoke-JarvisProcess -FilePath $cmd.FilePath -ArgumentList $cmd.ArgumentList -WorkingDirectory $Target)
+}
+
+function Get-JarvisVoiceConsent {
+    # Zustimmung zu einem Download fuer die Spracheingabe. -InstallVoice = ja ohne Frage; -Previously = das
+    # Paket war schon installiert (Zustimmung gilt weiter); -AssumeYes (-Yes) laedt nie; sonst fragen (Vorgabe ja,
+    # weil die Spracheingabe im Assistenten ausdruecklich eingeschaltet wurde).
+    param([string]$Prompt, [switch]$AssumeYes, [switch]$InstallVoice, [switch]$Previously)
+    if ($InstallVoice) {
+        Write-JarvisInfo ('{0} -> ja (-InstallVoice)' -f $Prompt)
+        return $true
+    }
+    if ($Previously) {
+        Write-JarvisInfo ('{0} -> ja (war schon installiert)' -f $Prompt)
+        return $true
+    }
+    if ($AssumeYes) {
+        Write-JarvisInfo ('{0} -> nein (mit -Yes wird nichts geladen; dafuer -InstallVoice)' -f $Prompt)
+        return $false
+    }
+    return (Read-JarvisYesNo $Prompt -Default $true)
+}
+
+function Initialize-JarvisVoice {
+    # Schritt "Spracheingabe": nur wenn voice.stt.enabled in config.yaml steht (Info = Ausgabe von
+    # "setup_wizard info"), und jeder Download nur nach Zustimmung. Ein Fehler bricht die Installation nie ab.
+    # Liefert Extras (fuer den Marker: @('voice') oder leer) und State: off, no-package, no-model, ready, error.
+    param([string]$Python, [string]$Target, [string]$PythonEnv, $Info, [switch]$AssumeYes, [switch]$InstallVoice,
+        [switch]$PreviouslyInstalled)
+    $enabled = $false
+    $model = 'small'
+    $size = 'Groesse unbekannt'
+    if ($Info) {
+        $enabled = ($Info.stt_enabled -eq $true)
+        if ($Info.stt_model) { $model = [string]$Info.stt_model }
+        if ($Info.stt_model_size) { $size = [string]$Info.stt_model_size }
+    }
+    if (-not $enabled) {
+        Write-JarvisInfo 'Spracheingabe ist aus (voice.stt.enabled in config.yaml) - es wird nichts geladen.'
+        Write-JarvisInfo 'Einschalten: Install.cmd erneut starten, "Konfiguration jetzt anpassen?" = j, Schritt "Stimme".'
+        if ($PreviouslyInstalled) {
+            Write-JarvisInfo 'Das Zusatzpaket faster-whisper entfaellt beim naechsten Install.cmd-Lauf (ein geladenes Whisper-Modell bleibt).'
+        }
+        return [pscustomobject]@{ Extras = [string[]]@(); State = 'off' }
+    }
+    $check = Invoke-JarvisVoiceCheck -Python $Python -Target $Target
+    if ($check.ExitCode -eq 3) {
+        Write-JarvisInfo 'Die Spracheingabe braucht das Zusatzpaket faster-whisper (Whisper fuer die CPU, ca. 90 MB von'
+        Write-JarvisInfo 'pypi.org; Versionen und Pruefsummen fest aus uv.lock bzw. requirements-voice.txt).'
+        if (-not (Get-JarvisVoiceConsent 'Zusatzpaket fuer die Spracheingabe jetzt installieren?' -AssumeYes:$AssumeYes `
+                    -InstallVoice:$InstallVoice -Previously:$PreviouslyInstalled)) {
+            Write-JarvisInfo 'Nicht installiert - der Mikrofon-Knopf meldet dann "nicht installiert". Spaeter: Install.cmd erneut starten.'
+            return [pscustomobject]@{ Extras = [string[]]@(); State = 'no-package' }
+        }
+        $rc = Install-JarvisVoicePackage -Target $Target -PythonEnv $PythonEnv
+        if ($rc -ne 0) {
+            Write-JarvisWarn (('Das Zusatzpaket konnte nicht installiert werden (Exitcode {0}, Meldung oben). JARVIS laeuft ' +
+                    'trotzdem, nur ohne Spracheingabe. Internetverbindung zu pypi.org pruefen und Install.cmd erneut starten.') -f $rc)
+            return [pscustomobject]@{ Extras = [string[]]@(); State = 'no-package' }
+        }
+        $check = Invoke-JarvisVoiceCheck -Python $Python -Target $Target
+        if ($check.ExitCode -eq 3) {
+            Write-JarvisWarn ('faster-whisper ist nach der Installation nicht verfuegbar: ' + (Get-JarvisVoiceMessage $check))
+            return [pscustomobject]@{ Extras = [string[]]@(); State = 'no-package' }
+        }
+        Write-JarvisOk 'Zusatzpaket faster-whisper installiert.'
+    }
+    $voiceExtras = [string[]]@('voice')
+    if ($check.ExitCode -eq 0) {
+        Write-JarvisOk (Get-JarvisVoiceMessage $check)
+        return [pscustomobject]@{ Extras = $voiceExtras; State = 'ready' }
+    }
+    if ($check.ExitCode -ne 1) {
+        Write-JarvisWarn ('Spracheingabe: {0} (Exitcode {1})' -f (Get-JarvisVoiceMessage $check), $check.ExitCode)
+        return [pscustomobject]@{ Extras = $voiceExtras; State = 'error' }
+    }
+    $manual = Format-JarvisCommand $Python (Get-JarvisVoiceArguments -Target $Target -Action 'download')
+    Write-JarvisInfo ('Das Whisper-Modell "{0}" ({1}) fehlt noch. Es wird einmalig von Hugging Face (huggingface.co)' -f $model, $size)
+    Write-JarvisInfo 'geladen (Ziel: voice.stt.download_root, Vorgabe state\whisper; kein Konto, kein Token). Danach laeuft die'
+    Write-JarvisInfo 'Spracherkennung offline.'
+    if (-not (Get-JarvisVoiceConsent ('Whisper-Modell "{0}" jetzt herunterladen?' -f $model) -AssumeYes:$AssumeYes -InstallVoice:$InstallVoice)) {
+        Write-JarvisInfo ('Spaeter von Hand (im Ordner {0}): {1}' -f $Target, $manual)
+        return [pscustomobject]@{ Extras = $voiceExtras; State = 'no-model' }
+    }
+    $rc = Invoke-JarvisProcess -FilePath $Python -ArgumentList (Get-JarvisVoiceArguments -Target $Target -Action 'download') -WorkingDirectory $Target
+    if ($rc -ne 0) {
+        Write-JarvisWarn (('Download des Whisper-Modells fehlgeschlagen (Exitcode {0}, Meldung oben). JARVIS laeuft trotzdem; ' +
+                'der Mikrofon-Knopf meldet dann "Modell fehlt". Spaeter erneut: {1}') -f $rc, $manual)
+        return [pscustomobject]@{ Extras = $voiceExtras; State = 'no-model' }
+    }
+    Write-JarvisOk ('Whisper-Modell "{0}" heruntergeladen.' -f $model)
+    return [pscustomobject]@{ Extras = $voiceExtras; State = 'ready' }
+}
+
+# ---------------------------------------------------------------------------------------------
 # Einrichtungsassistent (python -m app.setup_wizard)
 # ---------------------------------------------------------------------------------------------
 
@@ -1512,8 +1676,19 @@ function Invoke-JarvisWizard {
     return (Invoke-JarvisProcess -FilePath $Python -ArgumentList $argList -WorkingDirectory $Target)
 }
 
+function Test-JarvisConfigHasSection {
+    # Grob: beginnt in config.yaml eine Zeile mit "<Name>:"? Nur fuer Hinweise (geprueft wird in Python).
+    param([string]$Path, [string]$Name)
+    try {
+        $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    } catch {
+        return $true
+    }
+    return [regex]::IsMatch($text, ('(?m)^' + [regex]::Escape($Name) + '\s*:'))
+}
+
 function Get-JarvisServerInfo {
-    # {"bind","port","local_url","warnings"} aus "setup_wizard info"; $null bei Fehler.
+    # {"bind","port","local_url","warnings",...} aus "setup_wizard info" (Felder siehe app/setup_wizard.py); $null bei Fehler.
     param([string]$Python, [string]$Target)
     $config = Join-Path $Target 'config.yaml'
     $argList = Get-JarvisWizardArguments -Subcommand 'info' -Arguments @('--config', $config)

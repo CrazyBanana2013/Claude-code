@@ -7,12 +7,16 @@ Aufruf im Installationsordner mit dem Python der virtuellen Umgebung:
 
 configure  Exit 0 = gespeichert oder unverändert gelassen, 1 = abgebrochen (Datei unberührt), 2 = Fehler.
 token      Legt secrets.yaml mit einem neuen Token an, falls noch keiner existiert (zeigt ihn einmal an).
-info       Eine Zeile JSON: {"bind", "port", "local_url", "warnings"}.
+info       Eine Zeile JSON: {"bind", "port", "local_url", "warnings", "desktop_enabled", "vision_model",
+           "tts_enabled", "stt_enabled", "stt_model", "stt_model_size"} (vision_model = null, solange TODO).
 
 Grundsätze:
 - Geräte (WLED, ESPHome) werden höchstens lesend abgefragt (GET), Ollama nur über GET /api/tags und
   POST /api/show. Es wird nichts geschaltet und kein Modell gezogen.
-- Das CS2-Skript wird nie geöffnet oder gelesen – es wird nur geprüft, ob die Datei existiert.
+- Das CS2-Skript wird nie geöffnet oder gelesen – es wird nur geprüft, ob die Datei existiert. Dasselbe
+  gilt für Programme der PC-Steuerung (desktop.apps): nur Existenzprüfung, nie starten.
+- Es wird nichts heruntergeladen: Zusatzpaket und Whisper-Modell für die Spracheingabe lädt erst der
+  Installer, und nur nach Zustimmung.
 - Eine vorhandene config.yaml wird vor dem Überschreiben nach config.yaml.bak gesichert und atomar
   ersetzt. Alle Werte, die der Assistent nicht abfragt, bleiben erhalten.
 """
@@ -39,18 +43,23 @@ from urllib.parse import quote, urlsplit
 import httpx
 import yaml
 
+from pydantic import ValidationError
+
 from app.auth import load_or_create_token
 from app.config import (
     DEFAULT_NETWORKS,
     PROJECT_DIR,
     ConfigError,
+    DesktopAppConfig,
     config_warnings,
     is_todo,
     load_config,
     parse_config,
 )
-from app.ollama_models import OllamaUnavailable, list_models, tool_models
+from app.ollama_models import ModelInfo, OllamaUnavailable, list_models, tool_models, vision_models
+from app.tools.screen import is_local_url
 from app.tools.sensors import legacy_object_id
+from app.voice.stt import APPROX_SIZES
 
 PROBE_TIMEOUT = 3.0
 OLLAMA_TIMEOUT = 10.0
@@ -61,6 +70,8 @@ TODO_WLED = "http://TODO-WLED-IP"
 TODO_ESPHOME = "http://TODO-ESPHOME-IP"
 TODO_CWD = "TODO_ORDNER_DES_CS2_SKRIPTS"
 TODO_COMMAND = ["TODO_PROGRAMM", "TODO_ARGUMENT"]
+TODO_VISION = "TODO_VISIONMODELL"
+TOTAL_STEPS = 8
 TOKEN_EXISTS_MESSAGE = "Token vorhanden (steht in secrets.yaml)"
 
 EXIT_OK, EXIT_ABORTED, EXIT_ERROR = 0, 1, 2
@@ -164,13 +175,19 @@ _HEADER = [
 ]
 
 _KEY_ORDER: dict[str, list[str]] = {
-    "": ["server", "llm", "wled", "sensors", "scripts"],
+    "": ["server", "llm", "wled", "sensors", "scripts", "desktop", "vision", "voice"],
     "server": ["bind", "port", "allowed_networks"],
     "llm": ["enabled", "force_fallback", "base_url", "model", "keep_alive", "timeout", "temperature",
             "max_tool_rounds", "think"],
     "wled": ["base_url", "timeout"],
     "sensors[]": ["name", "type", "base_url", "entity_id", "unit"],
     "scripts[]": ["id", "label", "cwd", "command", "single_instance", "hide_window"],
+    "desktop": ["enabled", "allow_open_url", "allowed_domains", "apps"],
+    "desktop.apps[]": ["id", "label", "command", "process_name", "window_title"],
+    "vision": ["model", "max_side", "jpeg_quality", "monitor", "timeout"],
+    "voice": ["tts", "stt"],
+    "voice.tts": ["enabled", "speak_replies", "voice", "rate", "volume"],
+    "voice.stt": ["enabled", "model", "device", "compute_type", "language", "max_seconds", "download_root"],
 }
 
 # Kommentarzeilen über einem Schlüssel (exakter Pfad, Listenindex mit [n]).
@@ -188,6 +205,32 @@ _COMMENT_ABOVE: dict[str, list[str]] = {
         "  [\"C:\\\\Pfad\\\\python.exe\", \"skript.py\"]",
         "  [\"powershell.exe\", \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"skript.ps1\"]",
     ],
+    "desktop": [
+        "PC-Steuerung: nur diese festen Aktionen (Lautstärke, Medientasten, PC sperren, Webseite öffnen,",
+        "Programme aus der Liste unten starten/schließen/nach vorne holen). Es gibt bewusst KEINE freie",
+        "Maus-/Tastatursteuerung, kein Tippen von Text und keine Befehlszeile (siehe README \"Sicherheit\").",
+    ],
+    "desktop.allowed_domains": [
+        "Leer = alle Domains. Sonst nur diese Domains und ihre Subdomains, z. B. [\"youtube.com\", \"wikipedia.org\"]",
+    ],
+    "desktop.apps": [
+        "Feste Programmliste – das LLM kann nur diese IDs benutzen. command = Argumentliste (kein",
+        "Shell-String), process_name = Dateiname des laufenden Prozesses (zum Erkennen und Schließen),",
+        "window_title = Teil des Fenstertitels (für \"nach vorne holen\"). Beispiele: config.example.yaml.",
+    ],
+    "vision": [
+        "\"Bildschirm beschreiben\": Ein Bildschirmfoto geht NUR an das lokale Ollama (llm.base_url muss",
+        "127.0.0.1/localhost sein), wird nicht gespeichert und nie ans Handy geschickt.",
+    ],
+    "vision.model": [
+        "Ollama-Modell mit capability \"vision\" (ollama show <name>); darf gleich llm.model sein –",
+        "ein eigenes Modell braucht zusätzlich VRAM.",
+    ],
+    "voice.tts": ["Sprachausgabe über die PC-Lautsprecher (Windows-Sprachausgabe, offline)"],
+    "voice.stt": [
+        "Spracherkennung (Mikrofon-Button) lokal mit Whisper – braucht das Extra \"voice\"",
+        "und lädt das Modell einmalig herunter (Modell \"small\" etwa 500 MB).",
+    ],
 }
 
 # Kommentar am Zeilenende (Listenindex als []).
@@ -199,6 +242,16 @@ _COMMENT_INLINE: dict[str, str] = {
     "llm.think": "bei Thinking-Modellen (z. B. qwen3) auf false setzen = schneller",
     "wled.base_url": "z. B. http://<IP des WLED-ESP32>",
     "scripts[].hide_window": "true = ohne Konsolenfenster starten (nur Windows)",
+    "desktop.allow_open_url": "Webseiten im Standardbrowser öffnen (nur http/https)",
+    "vision.max_side": "längste Bildseite in Pixeln (wird verkleinert)",
+    "vision.monitor": "1 = Hauptbildschirm, 2 = zweiter ..., 0 = alle zusammen",
+    "vision.timeout": "Sekunden für die Beschreibung",
+    "voice.tts.speak_replies": "Antworten im Chat vorlesen (in der Oberfläche umschaltbar)",
+    "voice.tts.voice": "\"\" = erste installierte deutsche Stimme",
+    "voice.tts.rate": "-10 (langsam) bis 10 (schnell)",
+    "voice.tts.volume": "0 bis 100",
+    "voice.stt.max_seconds": "längste Aufnahme in Sekunden",
+    "voice.stt.download_root": "\"\" = state\\whisper",
 }
 
 _VALUE_COMMENT = {"100.64.0.0/10": "Tailscale (CGNAT-Bereich)"}
@@ -691,8 +744,8 @@ def _display(value: Any) -> str:
     return str(value)
 
 
-def _header(step: str, title: str) -> str:
-    return f"\n--- Schritt {step}: {title} ---"
+def _header(step: int, title: str) -> str:
+    return f"\n--- Schritt {step}/{TOTAL_STEPS}: {title} ---"
 
 
 def _skip_hint(configured: bool) -> str:
@@ -727,6 +780,8 @@ class Wizard:
         self.env = os.environ if env is None else env
         self.probe = True
         self._unreachable: set[str] = set()
+        self._models: list[ModelInfo] | None = None
+        self._models_error: str | None = None
 
     # --- kleine Helfer ---------------------------------------------------------------------
 
@@ -761,13 +816,16 @@ class Wizard:
         self.step_script()
         self.step_model()
         self.step_port()
+        self.step_vision()
+        self.step_desktop()
+        self.step_voice()
         return self.data
 
     # --- a) WLED ---------------------------------------------------------------------------
 
     def step_wled(self) -> None:
         wled = self.data["wled"]
-        self.say(_header("1/5", "WLED (LED-Strip)"))
+        self.say(_header(1, "WLED (LED-Strip)"))
         self.say("IP-Adresse (z. B. aus der WLED-App), Hostname oder URL des WLED-Controllers.")
         self.say(_skip_hint(not is_todo(wled["base_url"])))
         while True:
@@ -808,7 +866,7 @@ class Wizard:
     # --- b) ESPHome ------------------------------------------------------------------------
 
     def step_esphome(self) -> None:
-        self.say(_header("2/5", "ESPHome-Sensoren"))
+        self.say(_header(2, "ESPHome-Sensoren"))
         sensors = self.data["sensors"]
         created = not sensors
         if created:
@@ -905,7 +963,7 @@ class Wizard:
             self.data["scripts"][index] = entry
 
     def step_script(self) -> None:
-        self.say(_header("3/5", "CS2-Skript"))
+        self.say(_header(3, "CS2-Skript"))
         index, entry = self._script_entry()
         configured = not is_todo(entry["cwd"]) and not is_todo(entry["command"])
         if configured:
@@ -997,13 +1055,10 @@ class Wizard:
 
     def step_model(self) -> None:
         llm = self.data["llm"]
-        self.say(_header("4/5", "Sprachmodell (Ollama)"))
-        base = str(llm["base_url"]).rstrip("/")
-        self.say(f"Frage Ollama unter {base} ab (nur lesend: /api/tags, /api/show) ...")
-        try:
-            models = list_models(self.http, base, timeout=OLLAMA_TIMEOUT)
-        except OllamaUnavailable as exc:
-            self.say(f"  {exc}.")
+        self.say(_header(4, "Sprachmodell (Ollama)"))
+        models = self._ollama_models()
+        if models is None:
+            self.say(f"  {self._models_error}.")
             self._explain_no_model(llm["model"])
             return
         if not llm["enabled"] or llm["force_fallback"]:
@@ -1019,7 +1074,8 @@ class Wizard:
             return
         self.say("Installierte Modelle mit Tool-Unterstützung (kleinstes zuerst):")
         for i, model in enumerate(tools, 1):
-            self.say(f"  {i}) {model.name}  ({model.size_gb:.1f} GB)")
+            extra = " – versteht auch Bilder (auch für 'Bildschirm beschreiben')" if model.supports_vision else ""
+            self.say(f"  {i}) {model.name}  ({model.size_gb:.1f} GB){extra}")
         others = [m.name for m in models if not m.supports_tools]
         if others:
             self.say(f"  Ohne Tool-Unterstützung (für JARVIS nicht nutzbar): {', '.join(others)}")
@@ -1050,6 +1106,17 @@ class Wizard:
             self.say(f"  -> llm.model = {choice}")
             return
 
+    def _ollama_models(self) -> list[ModelInfo] | None:
+        """Installierte Modelle (einmal abgefragt, auch für das Vision-Modell); None = Ollama nicht erreichbar."""
+        if self._models is None and self._models_error is None:
+            base = str(self.data["llm"]["base_url"]).rstrip("/")
+            self.say(f"Frage Ollama unter {base} ab (nur lesend: /api/tags, /api/show) ...")
+            try:
+                self._models = list_models(self.http, base, timeout=OLLAMA_TIMEOUT)
+            except OllamaUnavailable as exc:
+                self._models_error = str(exc)
+        return self._models
+
     def _explain_no_model(self, current: str) -> None:
         self.say("  Kein Problem: JARVIS funktioniert auch ohne Sprachmodell. Buttons und Regel-Parser")
         self.say("  verstehen die Kernbefehle (z. B. 'Licht an', 'Helligkeit 40', 'Wie warm ist es?').")
@@ -1063,7 +1130,7 @@ class Wizard:
 
     def step_port(self) -> None:
         server = self.data["server"]
-        self.say(_header("5/5", "Server-Port"))
+        self.say(_header(5, "Server-Port"))
         self.say("Port, unter dem JARVIS im Heimnetz und über Tailscale erreichbar ist (Standard: 8765).")
         self.say("Die Firewall-Regel muss denselben Port nutzen. Niemals im Router freigeben!")
         while True:
@@ -1074,6 +1141,272 @@ class Wizard:
                 server["port"] = int(raw)
                 return
             self.say("  Bitte eine Zahl von 1 bis 65535 eingeben.")
+
+    # --- f) Vision-Modell (Bildschirm beschreiben) -----------------------------------------
+
+    def step_vision(self) -> None:
+        vision, llm = self.data["vision"], self.data["llm"]
+        self.say(_header(6, "Bildschirm beschreiben (Vision-Modell)"))
+        self.say("Auf Wunsch beschreibt ein lokales Ollama-Modell, was auf dem Bildschirm zu sehen ist. Das")
+        self.say("Bildschirmfoto geht nur an Ollama auf diesem PC, wird nicht gespeichert und nie ans Handy geschickt.")
+        if not is_local_url(str(llm["base_url"])):
+            self.say(f"  Hinweis: llm.base_url ({llm['base_url']}) zeigt nicht auf diesen PC – dann bleibt")
+            self.say("  'Bildschirm beschreiben' gesperrt (das Bild darf den PC nicht verlassen).")
+        current = vision["model"]
+        models = self._ollama_models()
+        if models is None:
+            self.say(f"  Ollama ist nicht erreichbar – vision.model bleibt: {_display(current)}")
+            return
+        candidates = vision_models(models)
+        if not candidates:
+            if models:
+                self.say(f"  {len(models)} Modell(e) installiert, aber keins versteht Bilder (capability 'vision').")
+            else:
+                self.say("  Es ist noch kein Modell installiert.")
+            self.say("  Ohne Vision-Modell meldet 'Bildschirm beschreiben' nur 'noch nicht eingerichtet' – alles andere")
+            self.say("  geht trotzdem. Später: ein Modell mit 'vision' aussuchen (https://ollama.com/search?c=vision),")
+            self.say("  selbst 'ollama pull <name>' ausführen und Install.cmd erneut starten ('Konfiguration")
+            self.say("  jetzt anpassen?' = j). Kann ein Modell 'vision' und 'tools', reicht eines für beides.")
+            self.say(f"  vision.model bleibt: {_display(current)}")
+            return
+        self.say("Installierte Modelle, die Bilder verstehen (kleinstes zuerst):")
+        for i, model in enumerate(candidates, 1):
+            notes = []
+            if model.name == llm["model"]:
+                notes.append("= llm.model, kein zusätzlicher VRAM")
+            elif model.supports_tools:
+                notes.append("kann auch Tools")
+            extra = f" – {', '.join(notes)}" if notes else ""
+            self.say(f"  {i}) {model.name}  ({model.size_gb:.1f} GB){extra}")
+        names = [m.name for m in candidates]
+        if current in names:
+            default = names.index(current)
+        elif llm["model"] in names:
+            default = names.index(llm["model"])  # gleiches Modell wie der Chat: braucht keinen zusätzlichen VRAM
+        else:
+            default = 0
+            if not is_todo(current):
+                self.say(f"  Hinweis: '{current}' (bisher eingetragen) ist nicht installiert oder versteht keine Bilder.")
+        while True:
+            shown = f"{default + 1}: {names[default]}"
+            raw = self.ask("Vision-Modell (Nummer oder Name, '-' = unverändert lassen)", show=shown)
+            if raw == SKIP:
+                self.say(f"  vision.model bleibt: {_display(current)}")
+                return
+            if not raw:
+                choice = names[default]
+            elif raw.isdigit() and 1 <= int(raw) <= len(names):
+                choice = names[int(raw) - 1]
+            elif raw in names:
+                choice = raw
+            else:
+                self.say("  Bitte eine Nummer aus der Liste oder einen der Namen eingeben.")
+                continue
+            vision["model"] = choice
+            self.say(f"  -> vision.model = {choice}")
+            return
+
+    # --- g) PC-Steuerung (feste Aktionen, feste Programmliste) -----------------------------
+
+    def step_desktop(self) -> None:
+        desktop = self.data["desktop"]
+        self.say(_header(7, "PC-Steuerung (feste Aktionen)"))
+        self.say("JARVIS kann nur diese festen Aktionen: Lautstärke, Medientasten (Play/Pause, Titel vor/zurück),")
+        self.say("PC sperren, Webseiten im Standardbrowser öffnen und Programme aus einer festen Liste starten,")
+        self.say("schließen (nur nach Bestätigung in der Oberfläche) und nach vorne holen. Es gibt bewusst keine")
+        self.say("freie Maus-/Tastatursteuerung, kein Tippen von Text und keine Befehlszeile.")
+        desktop["enabled"] = self.confirm("PC-Steuerung einschalten?", bool(desktop["enabled"]))
+        if not desktop["enabled"]:
+            self.say("  PC-Steuerung ist aus (desktop.enabled: false).")
+            return
+        apps = desktop["apps"]
+        self._say_apps(apps)
+        self._offer_default_apps(apps)
+        self._offer_found_apps(apps)
+        self._ask_more_apps(apps)
+
+    def _say_apps(self, apps: list[dict]) -> None:
+        if apps:
+            listed = ", ".join(f"{a['label']} ({a['process_name']})" for a in apps)
+            self.say(f"Programme in der Liste: {listed}")
+        else:
+            self.say("Die Programmliste ist leer.")
+
+    def _offer_default_apps(self, apps: list[dict]) -> None:
+        missing = [copy.deepcopy(a) for a in self.defaults.get("desktop", {}).get("apps", [])
+                   if not _app_known(apps, a)]
+        if not missing:
+            return
+        labels = ", ".join(a["label"] for a in missing)
+        # Leere Liste: Vorschlag ja. Fehlen nur einzelne, wurden sie wohl absichtlich entfernt.
+        if self.confirm(f"Standard-Programme hinzufügen ({labels})?", not apps):
+            for app in missing:
+                app["id"] = _unique_app_id(app["id"], apps)
+                apps.append(app)
+            self.say(f"  -> hinzugefügt: {labels}")
+
+    def _offer_found_apps(self, apps: list[dict]) -> None:
+        for known in KNOWN_APPS:
+            path = next((c for c in known.candidates(self.env) if self.is_file(c)), None)
+            if path is None:
+                continue
+            entry = known.entry(path, apps)
+            if _app_known(apps, entry):
+                continue
+            if self.confirm(f"Gefunden: {known.label} ({path}) – zur Liste hinzufügen?", True):
+                apps.append(entry)
+
+    def _ask_more_apps(self, apps: list[dict]) -> None:
+        self.say("Weitere Programme: Pfad zur .exe (Tipp: Umschalt + Rechtsklick -> 'Als Pfad kopieren').")
+        while True:
+            raw = clean_path(self.ask("Weiteres Programm (Pfad zur .exe, Enter = fertig)"))
+            if not raw or raw == SKIP:
+                return
+            path = absolute_path(raw)
+            if _pathmod(path).splitext(path)[1].lower() != ".exe":
+                self.say("  Bitte den Pfad zu einer .exe-Datei angeben (bei einer Verknüpfung: Rechtsklick ->")
+                self.say("  Eigenschaften -> 'Ziel').")
+                continue
+            if not self.is_file(path):
+                self.say(f"  Datei nicht gefunden: {path}")
+                continue
+            entry = app_entry_for_exe(path, apps)
+            try:
+                DesktopAppConfig.model_validate(entry)
+            except ValidationError as exc:
+                self.say(f"  Nicht möglich: {_first_error(exc)}")
+                continue
+            if _app_known(apps, entry):
+                self.say(f"  {entry['process_name']} ist schon in der Liste.")
+                continue
+            label = self.ask("  Name in der Oberfläche", show=entry["label"])
+            if label and label != SKIP:
+                entry["label"] = label[:60]
+                entry["window_title"] = label[:60]
+            apps.append(entry)
+            self.say(f"  -> hinzugefügt: {entry['label']} (ID {entry['id']}, Prozess {entry['process_name']})")
+
+    # --- h) Stimme ---------------------------------------------------------------------------
+
+    def step_voice(self) -> None:
+        tts, stt = self.data["voice"]["tts"], self.data["voice"]["stt"]
+        self.say(_header(8, "Stimme (Sprachausgabe und Spracheingabe)"))
+        self.say("Sprachausgabe: JARVIS liest Antworten über die Lautsprecher des PCs vor (eingebaute")
+        self.say("Windows-Stimme, offline, deutsch). In der Oberfläche schaltet 'PC spricht' das an und aus.")
+        tts["enabled"] = self.confirm("Sprachausgabe einschalten?", bool(tts["enabled"]))
+        self.say("Spracheingabe: Mikrofon-Knopf in der Oberfläche; erkannt wird lokal auf dem PC mit Whisper,")
+        self.say("die Aufnahme verlässt den PC nicht. Dafür lädt der Installer einmalig – erst nach Rückfrage – das")
+        size = APPROX_SIZES.get(str(stt["model"]))
+        self.say(f"Zusatzpaket faster-whisper (ca. 90 MB, pypi.org) und das Whisper-Modell '{stt['model']}' "
+                 f"({size or 'Größe unbekannt'}, Hugging Face).")
+        self.say("Am Handy braucht das Mikrofon HTTPS (README, Abschnitt 12 'Spracheingabe am Handy').")
+        label = f"Spracheingabe einschalten (Modell-Download {size})?" if size else "Spracheingabe einschalten?"
+        stt["enabled"] = self.confirm(label, bool(stt["enabled"]))
+        if stt["enabled"]:
+            self._ask_whisper_model(stt)
+
+    def _ask_whisper_model(self, stt: dict) -> None:
+        names = list(APPROX_SIZES)
+        half = (len(names) + 1) // 2
+        self.say("Whisper-Modelle: " + ", ".join(f"{n} ({APPROX_SIZES[n]})" for n in names[:half]) + ",")
+        self.say("                 " + ", ".join(f"{n} ({APPROX_SIZES[n]})" for n in names[half:]) + ".")
+        self.say("Größer = genauer, aber langsamer (die Erkennung läuft auf der CPU). Empfehlung: small.")
+        while True:
+            raw = self.ask("Whisper-Modell ('-' = unverändert lassen)", stt["model"])
+            if not raw or raw == SKIP:
+                return
+            if raw.lower() in names:
+                stt["model"] = raw.lower()
+                size = APPROX_SIZES[stt["model"]]
+                self.say(f"  -> voice.stt.model = {stt['model']} ({size})")
+                return
+            self.say(f"  Bitte einen dieser Namen eingeben: {', '.join(names)}.")
+
+
+# --------------------------------------------------------------------------------------------
+# Programme für die PC-Steuerung (Vorschläge; die Dateien werden nie geöffnet oder gestartet)
+# --------------------------------------------------------------------------------------------
+
+_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def _first_error(exc: ValidationError) -> str:
+    errors = exc.errors()
+    message = str(errors[0].get("msg", "")) if errors else str(exc)
+    return message.removeprefix("Value error, ")
+
+
+def _app_known(apps: list[dict], entry: dict) -> bool:
+    name = str(entry.get("process_name", "")).lower()
+    return any(str(a.get("process_name", "")).lower() == name for a in apps)
+
+
+def _unique_app_id(base: str, apps: list[dict]) -> str:
+    taken = {str(a.get("id")) for a in apps}
+    if base not in taken:
+        return base
+    for n in range(2, 1000):
+        candidate = f"{base[:28]}-{n}"
+        if candidate not in taken:
+            return candidate
+    raise ValueError("zu viele Programme mit gleichem Namen")
+
+
+def app_id_from(label: str, apps: list[dict]) -> str:
+    """ID nach ID_PATTERN (klein, a-z0-9_-) aus einem Namen, eindeutig in der Liste."""
+    text = label.lower().translate(_UMLAUTS)
+    text = re.sub(r"[^a-z0-9_-]+", "-", text).strip("-_")[:32] or "programm"
+    if not text[0].isalnum():
+        text = "p" + text[:31]
+    return _unique_app_id(text, apps)
+
+
+def app_entry_for_exe(path: str, apps: list[dict]) -> dict:
+    """Eintrag für desktop.apps aus dem Pfad einer .exe (Name = Dateiname ohne Endung)."""
+    pm = _pathmod(path)
+    exe = pm.basename(path)
+    label = pm.splitext(exe)[0][:60] or exe
+    return {"id": app_id_from(label, apps), "label": label, "command": [path], "process_name": exe,
+            "window_title": label}
+
+
+@dataclass(frozen=True)
+class KnownApp:
+    """Häufiges Programm, dessen übliche Installationsorte der Assistent prüft (nur Existenz)."""
+
+    id: str
+    label: str
+    process_name: str
+    window_title: str
+    locations: tuple[tuple[str, str], ...]  # (Umgebungsvariable, relativer Pfad)
+    args: tuple[str, ...] = ()
+
+    def candidates(self, env: Mapping[str, str]) -> list[str]:
+        return [ntpath.join(env[var], rel) for var, rel in self.locations if env.get(var)]
+
+    def entry(self, path: str, apps: list[dict]) -> dict:
+        return {"id": _unique_app_id(self.id, apps), "label": self.label, "command": [path, *self.args],
+                "process_name": self.process_name, "window_title": self.window_title}
+
+
+KNOWN_APPS = (
+    KnownApp("spotify", "Spotify", "Spotify.exe", "Spotify", (("APPDATA", r"Spotify\Spotify.exe"),)),
+    # Discord startet über seinen Updater (so auch die Startmenü-Verknüpfung), der Prozess heißt Discord.exe.
+    KnownApp("discord", "Discord", "Discord.exe", "Discord", (("LOCALAPPDATA", r"Discord\Update.exe"),),
+             ("--processStart", "Discord.exe")),
+    KnownApp("steam", "Steam", "steam.exe", "Steam",
+             (("ProgramFiles(x86)", r"Steam\steam.exe"), ("ProgramFiles", r"Steam\steam.exe"))),
+    KnownApp("firefox", "Firefox", "firefox.exe", "Firefox",
+             (("ProgramFiles", r"Mozilla Firefox\firefox.exe"), ("ProgramFiles(x86)", r"Mozilla Firefox\firefox.exe"),
+              ("LOCALAPPDATA", r"Mozilla Firefox\firefox.exe"))),
+    KnownApp("chrome", "Chrome", "chrome.exe", "Chrome",
+             (("ProgramFiles", r"Google\Chrome\Application\chrome.exe"),
+              ("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe"),
+              ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"))),
+    KnownApp("edge", "Edge", "msedge.exe", "Edge",
+             (("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe"),
+              ("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe"))),
+)
 
 
 def summary_lines(data: dict) -> list[str]:
@@ -1101,7 +1434,18 @@ def summary_lines(data: dict) -> list[str]:
         lines.append(row("", f"+ {len(others)} weitere(s) Skript(e), unverändert"))
     lines.append(row("LLM-Modell", _display(data["llm"]["model"])))
     lines.append(row("Server", f"{data['server']['bind']}, Port {data['server']['port']}"))
-    lines.append("  Alle übrigen Werte (allowed_networks, LLM-Einstellungen, Timeouts) bleiben erhalten.")
+    lines.append(row("Bildschirm", _display(data["vision"]["model"])))
+    desktop = data["desktop"]
+    if desktop["enabled"]:
+        labels = ", ".join(a["label"] for a in desktop["apps"]) or "keine Programme"
+        lines.append(row("PC-Steuerung", f"an – {labels}"))
+    else:
+        lines.append(row("PC-Steuerung", "aus"))
+    tts, stt = data["voice"]["tts"], data["voice"]["stt"]
+    lines.append(row("Sprachausgabe", "an" if tts["enabled"] else "aus"))
+    lines.append(row("Spracheingabe", f"an (Whisper-Modell {stt['model']})" if stt["enabled"] else "aus"))
+    lines.append("  Alle übrigen Werte (allowed_networks, LLM-Einstellungen, Timeouts, Stimme, Lautstärke, erlaubte")
+    lines.append("  Domains) bleiben erhalten.")
     return lines
 
 
@@ -1234,6 +1578,10 @@ def _configure_interactive(config_path, example_path, io, http, is_file, is_dir,
         io.say(f"Sicherung der alten Datei: {backup}")
     io.say("Damit Änderungen wirken: JARVIS neu starten (Startmenü > JARVIS > JARVIS beenden, dann")
     io.say("JARVIS starten). Install.cmd erledigt das automatisch.")
+    if final["voice"]["stt"]["enabled"]:
+        io.say("Spracheingabe: Zusatzpaket und Whisper-Modell installiert Install.cmd (nach Rückfrage). Ohne")
+        io.say("Installer im JARVIS-Ordner: uv sync --frozen --no-dev --extra voice, danach")
+        io.say(".venv\\Scripts\\python.exe -m app.voice.stt --download --config config.yaml")
     warnings = config_warnings(parse_config(final))
     if warnings:
         io.say("Noch offen (JARVIS startet trotzdem):")
@@ -1296,6 +1644,13 @@ def info(config_path: Path) -> int:
         "port": cfg.server.port,
         "local_url": local_url(cfg.server.bind, cfg.server.port),
         "warnings": config_warnings(cfg),
+        # Für den Installer (Zusammenfassung, optionales Paket für die Spracheingabe):
+        "desktop_enabled": cfg.desktop.enabled,
+        "vision_model": None if is_todo(cfg.vision.model) else cfg.vision.model,
+        "tts_enabled": cfg.voice.tts.enabled,
+        "stt_enabled": cfg.voice.stt.enabled,
+        "stt_model": cfg.voice.stt.model,
+        "stt_model_size": APPROX_SIZES.get(cfg.voice.stt.model),  # z. B. "ca. 500 MB", null = unbekannt
     }
     print(json.dumps(payload))  # ensure_ascii: reine ASCII-Zeile, egal welche Konsolen-Codepage
     return EXIT_OK
@@ -1313,7 +1668,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="nie fragen: fehlt die Datei, Standardwerte schreiben, sonst nur prüfen")
     p = sub.add_parser("token", help="API-Token in secrets.yaml sicherstellen")
     p.add_argument("--secrets", required=True, type=Path, help="Pfad zur secrets.yaml")
-    p = sub.add_parser("info", help="bind/port/local_url/warnings als eine JSON-Zeile ausgeben")
+    p = sub.add_parser("info", help="bind/port/local_url/warnings/... als eine JSON-Zeile ausgeben")
     p.add_argument("--config", required=True, type=Path, help="Pfad zur config.yaml")
     return parser
 

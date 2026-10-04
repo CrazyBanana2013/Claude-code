@@ -53,7 +53,11 @@ try {
         }
         Assert-True ((Get-TestFile $t 'config.yaml') -notmatch 'KOEDER') 'config.yaml stammt vom Assistenten, nicht aus der Quelle'
         Assert-True ((Get-TestFile $t 'secrets.yaml') -match 'api_token') 'Token angelegt'
-        Assert-True ($r.Output -match '\[10/10\]') 'alle 10 Schritte'
+        Assert-True ($r.Output -match '\[11/11\]') 'alle 11 Schritte'
+        Assert-True ($r.Output -match '\[7/11\] Spracheingabe \(optional\)') 'Schritt Spracheingabe'
+        Assert-True ($r.Output -match 'Spracheingabe ist aus') 'Spracheingabe aus (Vorgabe) - nichts geladen'
+        Assert-True ($r.Output -match 'Stimme:\s+Sprachausgabe an, Spracheingabe aus') ('Zusammenfassung Stimme: ' + $r.Output)
+        Assert-True ($r.Output -match 'Bildschirm:\s+nicht eingerichtet') 'Zusammenfassung Bildschirm'
         Assert-True ($r.Output -match 'New-NetFirewallRule') 'Firewall-Befehle angezeigt'
         Assert-True ($r.Output -match 'Niemals Port 8765') 'Warnung Portfreigabe'
         $m = Read-JarvisManifest $t
@@ -62,6 +66,7 @@ try {
         Assert-Equal 0 @(Get-JarvisManifestList $m 'shortcuts').Count 'keine Verknuepfungen im Testmodus'
         Assert-True ($null -eq $m.autostart) 'kein Autostart im Testmodus'
         Assert-Equal 'uv' $m.python_env 'python_env'
+        Assert-Equal 0 @(Get-JarvisManifestList $m 'python_extras').Count 'keine Zusatzpakete'
         $files = @(Get-JarvisManifestList $m 'files')
         Assert-True ($files -contains 'app/__main__.py') 'files enthaelt Programmdateien'
         foreach ($f in @('config.yaml', 'secrets.yaml', 'state/scripts.json', 'tests/test_x.py')) { Assert-False ($files -contains $f) ('nicht in files: ' + $f) }
@@ -87,7 +92,7 @@ try {
         Assert-Equal 0 $r.ExitCode 'Exitcode (Installation geht weiter)'
         Assert-True ($r.Output -match 'bisherige config.yaml bleibt unveraendert') 'Abbruch als "behalten" gewertet'
         Assert-Equal $cfgBefore (Get-TestFile $t 'config.yaml') 'config.yaml unveraendert'
-        Assert-True ($r.Output -match '\[10/10\]') 'Installation bis zum Ende'
+        Assert-True ($r.Output -match '\[11/11\]') 'Installation bis zum Ende'
     }
 
     Invoke-Test 'Beschaedigter Installationsmarker blockiert kein Update' {
@@ -97,6 +102,45 @@ try {
         Assert-Equal 0 $r.ExitCode 'Exitcode'
         Assert-True ($r.Output -match 'beschaedigt') 'Hinweis auf kaputten Marker'
         Assert-Equal $version (Read-JarvisManifest $t).version 'Marker neu geschrieben'
+    }
+
+    Invoke-Test 'Update mit config.yaml von 0.2.0 (ohne desktop/vision/voice): gueltig, Hinweis auf neue Schritte' {
+        $cfgBefore = Get-TestFile $t 'config.yaml'
+        $idx = $cfgBefore.IndexOf("`ndesktop:")
+        Assert-True ($idx -gt 0) 'Abschnitt desktop in der vom Assistenten geschriebenen config.yaml'
+        [void](Set-TestFile $t 'config.yaml' ($cfgBefore.Substring(0, $idx + 1)))
+        try {
+            $r = Invoke-Install $src @('-Target', $t, '-NoStart')
+            if ($r.ExitCode -ne 0) { Write-TestOutput 'install.ps1 (alte config.yaml)' $r.Output }
+            Assert-Equal 0 $r.ExitCode 'Exitcode'
+            Assert-True ($r.Output -match 'Neu: Bildschirm beschreiben, PC-Steuerung und Stimme') ('Hinweis: ' + $r.Output)
+            Assert-True ($r.Output -match 'config.yaml ist gueltig') 'alte Datei gilt weiter'
+            Assert-True ($r.Output -match 'Spracheingabe ist aus') 'Vorgabe: Spracheingabe aus'
+        } finally {
+            [void](Set-TestFile $t 'config.yaml' $cfgBefore)
+        }
+    }
+
+    Invoke-Test 'Spracheingabe eingeschaltet, -Yes: echte Pruefung (Paket fehlt), nichts geladen' {
+        $cfgBefore = Get-TestFile $t 'config.yaml'
+        $sttOn = [regex]::Replace($cfgBefore, '(?m)^(\s+stt:\s*\r?\n\s+enabled:\s*)false', '${1}true')
+        Assert-True ($sttOn -ne $cfgBefore) 'voice.stt.enabled in config.yaml gefunden'
+        [void](Set-TestFile $t 'config.yaml' $sttOn)
+        try {
+            $r = Invoke-Install $src @('-Target', $t, '-NoStart')
+            if ($r.ExitCode -ne 0) { Write-TestOutput 'install.ps1 (Spracheingabe an)' $r.Output }
+            Assert-Equal 0 $r.ExitCode 'Exitcode'
+            Assert-True ($r.Output -match 'Zusatzpaket faster-whisper') ('Paket fehlt erkannt (app.voice.stt --check = 3): ' + $r.Output)
+            Assert-True ($r.Output -match 'mit -Yes wird nichts geladen; dafuer -InstallVoice') 'keine Zustimmung mit -Yes'
+            Assert-True ($r.Output -match 'Spracheingabe an, aber das Zusatzpaket fehlt') 'Zusammenfassung'
+            Assert-True ($r.Output -match 'Abschnitt 12 "Spracheingabe am Handy \(Tailscale HTTPS\)"') 'Hinweis HTTPS fuers Handy-Mikrofon'
+            Assert-Equal 0 @(Get-JarvisManifestList (Read-JarvisManifest $t) 'python_extras').Count 'nichts installiert'
+            $py = Get-JarvisVenvPython -Target $t
+            $probe = Invoke-JarvisCapture -FilePath $py -ArgumentList @('-c', 'import importlib.util as u; print(u.find_spec("faster_whisper") is None)')
+            Assert-Equal 'True' ($probe.Output -join '') 'faster_whisper nicht in der venv'
+        } finally {
+            [void](Set-TestFile $t 'config.yaml' $cfgBefore)
+        }
     }
 
     # Benutzer passt die Konfiguration an (eigener Port, nur lokal) und hat Daten in state/.
