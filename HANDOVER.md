@@ -1,5 +1,5 @@
 # Handover – JARVIS (lokaler KI-Assistent)
-Letztes Update: 2026-10-03 14:40 UTC
+Letztes Update: 2026-10-04 06:45 UTC
 
 ## Ziel
 Kleiner Webserver (FastAPI) auf einem Windows-PC mit JARVIS-Oberfläche (Chat + Schnellaktionen),
@@ -234,13 +234,22 @@ danach zu JARVIS weiter.
   langen Namen, verdeckter Tab, reduzierte Bewegung, 60 s ohne Speicherwachstum) – 6 Layout-/
   Bedienfehler gefunden und behoben. Nur headless Chromium unter Linux, kein echtes Handy.
 
+- [x] GitHub-Release v0.2.0 (Vorabversion) mit `JARVIS-Setup-0.2.0.zip` + `.sha256`:
+  https://github.com/CrazyBanana2013/Claude-code/releases/tag/v0.2.0 – erzeugt von
+  `.github/workflows/release.yml` (Push auf main/Entwicklungs-Branch: legt Release + Tag
+  `v<version>` an, wenn es die Version aus `jarvis/pyproject.toml` noch nicht gibt; sonst nichts).
+  Grund: Tag-Pushes sind aus der Cloud-Umgebung blockiert („unexpected disconnect“), Branch-Pushes
+  nicht. Verifiziert: Lauf 37183308693 erfolgreich; das ZIP auf GitHub ist byte-identisch mit
+  einem lokalen Bau desselben Commits (SHA-256 60ad1b80…), 35 Dateien, keine config/secrets.
+  **Neues Release = Version in `jarvis/pyproject.toml` erhöhen und pushen.**
+
 ## In Arbeit
 - Nichts. Offen sind nur Aufgaben am echten PC/Handy (siehe Nächste Schritte).
 
 ## Nächste Schritte
 Empfohlener Weg mit dem Installer (ersetzt die manuellen Punkte 1, 2, 5 und 12 der Liste darunter):
-A. **Paket holen:** Repo als ZIP herunterladen (GitHub „Code > Download ZIP“) oder klonen; im
-   Ordner `jarvis` liegt `Install.cmd`. Alternativ Release-ZIP bauen
+A. **Paket holen:** `JARVIS-Setup-0.2.0.zip` aus dem GitHub-Release v0.2.0 herunterladen
+   (oder Repo als ZIP / klonen; im Ordner `jarvis` liegt `Install.cmd`). Alternativ Release-ZIP bauen
    (`python scripts\build_installer.py`). ZIP vor dem Entpacken: Rechtsklick > Eigenschaften >
    „Zulassen“. NICHT in einen OneDrive-Ordner entpacken (z. B. nach `C:\JARVIS-Setup`).
 B. **`Install.cmd` doppelklicken** (nicht als Administrator). Der Assistent fragt WLED-IP,
@@ -315,7 +324,10 @@ Mögliche Weiterentwicklung (nicht beauftragt): eigener Sensor-Hub als weiterer 
   (PSScriptAnalyzer), Windows-Zweige (WScript.Shell-Verknüpfungen, pythonw, Get-CimInstance,
   Unblock-File, Set-Clipboard, ACLs, Reparse-Tags/OneDrive, Admin-Erkennung, cmd.exe-Verhalten)
   nur simuliert (`tests/ps/windows-sim.tests.ps1`). → Nächste Schritte B/E.
-- Entscheidung User: GitHub-Release mit dem fertigen ZIP veröffentlichen (dann muss niemand selbst bauen)?
+- ~~Entscheidung User: GitHub-Release veröffentlichen?~~ → Ja, erledigt (v0.2.0, Vorabversion).
+- Token aufs Handy bringen ist umständlich (43 Zeichen abtippen oder per Messenger an sich selbst).
+  Mögliche Verbesserung (nicht beauftragt): Kopplungs-QR-Code am PC, der die Tailscale-URL mit Token
+  enthält (Token im URL-Fragment `#token=…`, UI übernimmt ihn in localStorage).
 - HUD kosmetisch offen: Helligkeitsregler steht vor dem ersten LED-Status auf 50 %, Anzeige „–“;
   auf dem Desktop überlappt der Telemetrie-Text leicht einige Strudel-Linien.
 - Entscheidung User: Soll das CS2-Skript mit eigenem Fenster laufen (`hide_window: false`,
