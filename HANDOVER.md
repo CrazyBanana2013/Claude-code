@@ -1,5 +1,5 @@
 # Handover – JARVIS (lokaler KI-Assistent)
-Letztes Update: 2026-10-04 06:45 UTC
+Letztes Update: 2026-10-04 18:30 UTC
 
 ## Ziel
 Kleiner Webserver (FastAPI) auf einem Windows-PC mit JARVIS-Oberfläche (Chat + Schnellaktionen),
@@ -76,6 +76,15 @@ danach zu JARVIS weiter.
   `test_setup_wizard.py`, `test_main_pidfile.py`.
 - `jarvis/tests/web/hud.test.mjs` + `tests/test_ui_browser.py` – Playwright-Test der HUD-Oberfläche (25+ Fälle,
   eigener Fake-WLED/ESPHome und echter JARVIS-Server; `/api/confirm` wird im Browser immer blockiert).
+- `jarvis/app/tools/desktop.py` – feste PC-Aktionen (`desktop_apps_list/app_start/app_close/focus/volume/media/lock/open_url`);
+  jede Windows-API hinter einer dünnen Wrapper-Funktion (in Tests ersetzt), auf Nicht-Windows klare Ablehnung.
+- `jarvis/app/tools/screen.py` – `screen_describe` (mss-Screenshot → Pillow verkleinern → JPEG im Speicher →
+  lokales Ollama-Vision-Modell), `screen_status` (nur UI).
+- `jarvis/app/voice/tts.py` – Windows-Sprachausgabe (SAPI.SpVoice über comtypes in eigenem Worker-Thread).
+- `jarvis/app/voice/stt.py` – Spracherkennung mit faster-whisper (Extra `voice`), PyAV-Dekodierung im Speicher,
+  CLI `python -m app.voice.stt --check|--download --config <pfad> [--state <dir>]`.
+- `jarvis/requirements-voice.txt` – pip-Fallback inkl. Extra `voice` (`uv export --frozen --no-dev --extra voice`).
+- Tests: `tests/test_desktop.py`, `test_screen.py`, `test_voice_api.py`, `test_voice_stt.py`, `test_voice_tts.py`.
 
 ## Architektur & Entscheidungen
 - **Eine Registry** (`app/tools/registry.py`): Parameter jedes Tools sind ein pydantic-Modell;
@@ -153,6 +162,22 @@ danach zu JARVIS weiter.
   `<button>`s mit Live-Werten, Panels als Bottom-Sheet (Handy) bzw. Seitenpanel (≥ 900 px).
   Funktionsgleich mit der alten Kachel-Oberfläche plus Effekt-/Preset-Schnellwahl. Die alte
   Oberfläche ist nur noch in der Git-Historie (Commit c9dedba).
+- **PC-Steuerung nur über feste, geprüfte Aktionen** (Wunsch des Users: „PC steuern“). Bewusst KEINE
+  freie Maus-/Tastatursteuerung, kein Tippen, keine Shell, keine beliebigen Programme: JARVIS ist per
+  LAN/Tailscale erreichbar, und Bildschirminhalte könnten ein kleines Modell zu Aktionen verleiten.
+  Programme nur aus `desktop.apps` (Argumentliste, `process_name` ohne Systemprozesse). Schließen
+  nur über `/api/confirm` (verallgemeinerter ConfirmStore mit registrierten Aktionsnamen in `pc.py`).
+  Medien nur die vier festen Medientasten (SendInput). URLs nur http/https, keine lokalen/privaten/
+  Tailscale-Adressen (auch nicht über DNS-Namen, die dorthin auflösen), optional Domain-Allowlist.
+- **Bildschirm-Beschreibung:** Bild nur an lokales Ollama (`llm.base_url` muss loopback sein), nie
+  gespeichert, nie an den Client; Ergebnis als `untrusted_data` markiert und mit Präfix an das LLM;
+  nach `screen_describe` ist `desktop_open_url` im selben Chat-Durchgang gesperrt.
+- **Stimme:** SAPI über comtypes statt PowerShell-Subprozess (kein Kommandozeilen-Pfad für Text, eingebautes
+  Unterbrechen). Whisper lädt nur lokal (`local_files_only`), der Download ist ein eigener CLI-Schritt mit
+  Zustimmung im Installer. `/api/voice/stt` liest den Upload erst nach der Token-Prüfung (eigener
+  Multipart-Reader, 10 MB, `max_seconds`). Mikrofon am Handy braucht HTTPS → `tailscale serve`
+  (User-Aufgabe, README Abschnitt 12); dann kommen alle Anfragen von 127.0.0.1 (Token bleibt Pflicht,
+  Lockout ist mit dem PC-Browser geteilt).
 
 ## Erledigt
 - [x] M0 Setup: `jarvis/` angelegt (Repo `Claude-code` war schon ein Git-Repo, daher kein
@@ -243,8 +268,15 @@ danach zu JARVIS weiter.
   einem lokalen Bau desselben Commits (SHA-256 60ad1b80…), 35 Dateien, keine config/secrets.
   **Neues Release = Version in `jarvis/pyproject.toml` erhöhen und pushen.**
 
+- [x] Screenshots beschreiben, PC steuern (feste Aktionen), Sprechen und Hören: Backend
+  (`18cb328`), Oberfläche + Assistent + Installer (`dd176db`). Verifiziert: `JARVIS_PWSH=… pytest`
+  834 passed inkl. Browser-HUD-Test und Installer-E2E; Server-Smoke-Test ohne Traceback. Nur
+  simuliert (kein Windows): SAPI, pycaw, SendInput, LockWorkStation, SetForegroundWindow, mss,
+  faster-whisper mit echten Modelldaten, Mikrofon über Tailscale-HTTPS.
+
 ## In Arbeit
-- Nichts. Offen sind nur Aufgaben am echten PC/Handy (siehe Nächste Schritte).
+- Unabhängiges Review der neuen Funktionen (Prompt-Injection, Windows-APIs, Spracheingabe, UX/Doku) –
+  Workflow läuft; danach Fixes, Version 0.3.0 und neues Release.
 
 ## Nächste Schritte
 Empfohlener Weg mit dem Installer (ersetzt die manuellen Punkte 1, 2, 5 und 12 der Liste darunter):
@@ -260,6 +292,10 @@ C. Weiter mit den Punkten 3, 4 und 6–11 unten (Modell, ESPHome, Firewall-Prüf
    LED-Test, CS2-Skript, Herunterfahren, wake.html).
 D. **Neue Oberfläche am Handy prüfen** (390 px und quer): Knoten antippen, Panels öffnen/schließen,
    Animation flüssig? Akku/Wärme nach 10 min? Ergebnis hier notieren.
+F. **Neue Funktionen am PC testen:** Vision-Modell mit capability „vision“ ziehen (`ollama pull …`,
+   Auswahl im Assistenten), „Was ist auf dem Bildschirm?“, Lautstärke/Medien/Sperren, Editor starten und
+   schließen (Bestätigung), „PC spricht“ (deutsche Stimme vorhanden? sonst Windows-Standardstimme),
+   Mikrofon am PC (localhost) und am Handy nach `tailscale serve --bg 8765` (README Abschnitt 12).
 E. **Rückmeldung bei Windows-Fehlern** des Installers: Meldung + `%LOCALAPPDATA%\JARVIS\state\logs\server.log`
    hier eintragen.
 
