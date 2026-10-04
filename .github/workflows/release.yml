@@ -1,14 +1,24 @@
-# Baut das Installer-ZIP und veröffentlicht es als GitHub-Release, sobald ein Versions-Tag
-# (z. B. v0.2.0) gepusht wird. Der Tag muss zur Version in jarvis/pyproject.toml passen.
+# Baut das Installer-ZIP und veröffentlicht es als GitHub-Release (Vorabversion).
+# - Push auf main oder den Entwicklungs-Branch: gibt es für die Version aus jarvis/pyproject.toml
+#   noch kein Release, wird es samt Tag v<version> angelegt; sonst passiert nichts.
+#   Ein neues Release entsteht also genau dann, wenn die Version erhöht wird.
+# - Push eines Tags v*: der Tag muss zur Version in jarvis/pyproject.toml passen.
 name: Release
 
 on:
   push:
+    branches:
+      - main
+      - claude/affectionate-pasteur-utoby7
     tags:
       - "v*"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -16,22 +26,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Tag gegen pyproject.toml prüfen
+      - name: Version bestimmen
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(python3 -c "import tomllib; print(tomllib.load(open('jarvis/pyproject.toml','rb'))['project']['version'])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in jarvis/pyproject.toml"
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release v$version gibt es schon - nichts zu tun."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
 
       - name: Installer-ZIP bauen
+        if: env.SKIP != '1'
         run: |
-          # Fester Zeitstempel = Zeit des Tag-Commits, damit das ZIP reproduzierbar ist.
+          # Fester Zeitstempel = Zeit des Commits, damit das ZIP reproduzierbar ist.
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           python3 jarvis/scripts/build_installer.py --out dist
 
       - name: Release veröffentlichen
+        if: env.SKIP != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -49,7 +67,10 @@ jobs:
 
           ⚠️ Vorabversion: bisher nur unter Linux mit PowerShell 7 getestet, noch nicht auf echtem Windows.
           Niemals Port 8765 im Router freigeben – von unterwegs nur über Tailscale.
+
+          Gebaut aus Commit $GITHUB_SHA.
           EOF
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "v$VERSION" \
             "dist/JARVIS-Setup-$VERSION.zip" "dist/JARVIS-Setup-$VERSION.zip.sha256" \
-            --title "JARVIS $VERSION" --notes-file notes.md --prerelease --verify-tag
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "JARVIS $VERSION" --notes-file notes.md --prerelease
