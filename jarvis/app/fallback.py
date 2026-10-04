@@ -2,8 +2,10 @@
 
 Unterstützt u. a.: "licht an/aus", "helligkeit 40", "farbe rot", "effekt rainbow",
 "preset abend", "wie warm ist es", "starte/stoppe <skript>", "welche skripte laufen",
-"pc ausschalten", "herunterfahren abbrechen". Mehrere LED-Befehle in einem Satz werden
-kombiniert ("licht an, helligkeit 40 und farbe blau").
+"pc ausschalten", "herunterfahren abbrechen", "lauter"/"leiser"/"lautstärke 30"/"stumm"/"ton an",
+"pause"/"weiter"/"nächster titel"/"vorheriger titel", "pc sperren", "öffne <domain oder url>",
+"starte/schließe <programm>" (Skripte haben Vorrang), "was ist auf dem bildschirm".
+Mehrere LED-Befehle in einem Satz werden kombiniert ("licht an, helligkeit 40 und farbe blau").
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from app.tools.registry import Registry, run_recorded
 
 HELP = (
     "Das habe ich nicht verstanden. Beispiele: „Licht an“, „Helligkeit 40“, „Farbe rot“, "
-    "„Wie warm ist es?“, „Starte <Skript>“, „PC ausschalten“."
+    "„Wie warm ist es?“, „Starte <Skript>“, „Lauter“, „Pause“, „PC sperren“, „PC ausschalten“."
 )
 
 # Farbnamen, wie sie im Text vorkommen (vor normalize-Entfernung der Leerzeichen geprüft)
@@ -45,10 +47,113 @@ def _find_script(config: AppConfig, phrase: str):
     return None
 
 
+def _find_app(config: AppConfig, phrase: str):
+    phrase_n = normalize(re.sub(r"\b(das|den|die|mein|meine|meinen|programm|app|fenster|bitte)\b", " ", phrase))
+    if not phrase_n:
+        return None
+    apps = config.desktop.apps
+    for a in apps:
+        if phrase_n in (normalize(a.id), normalize(a.label)):
+            return a
+    for a in apps:
+        if phrase_n in normalize(a.label) or normalize(a.id) in phrase_n:
+            return a
+    return None
+
+
+# "öffne youtube.com", "geh auf https://…", "ruf wikipedia.org auf" – auf dem Originaltext, weil
+# _prep Punkte und Doppelpunkte entfernt.
+_URL_REQUEST = re.compile(
+    r"^\s*(?:bitte\s+)?(?:öffne|oeffne|geh(?:e)?\s+(?:auf|zu)|ruf(?:e)?)\s+(?:mir\s+)?(?:(?:die|den)\s+)?"
+    r"(?:(?:web)?seite\s+|website\s+|url\s+|adresse\s+|link\s+)?(\S+)"
+    r"(?:\s+(?:im|in\s+dem|mit\s+dem)\s+browser)?(?:\s+auf)?(?:\s+bitte)?\s*[.!?]*\s*$",
+    re.I,
+)
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
+_DOMAIN_LIKE = re.compile(r"^[\w-]+(?:\.[\w-]+)*\.([a-z]{2,63})(?::\d{1,5})?(?:[/?#]\S*)?$", re.I)
+# Dateiendungen, die wie eine Top-Level-Domain aussehen – das sind Programme, keine Webseiten.
+_FILE_SUFFIXES = {"exe", "bat", "cmd", "ps1", "lnk", "msi", "txt", "dll", "vbs", "py", "ahk"}
+
+
+def _url_request(message: str) -> str | None:
+    m = _URL_REQUEST.match(message)
+    if not m:
+        return None
+    target = m.group(1).rstrip(".,;!?")
+    if _SCHEME.match(target) or target.startswith("\\\\") or "\\" in target:
+        return target  # desktop_open_url prüft und lehnt alles außer http/https ab
+    d = _DOMAIN_LIKE.match(target)
+    if d and d.group(1).lower() not in _FILE_SUFFIXES:
+        return "https://" + target
+    return None
+
+
+_SCREEN_WORDS = {
+    "was", "ist", "auf", "dem", "den", "der", "die", "das", "meinem", "meinen", "mein", "deinem", "bildschirm",
+    "monitor", "screen", "beschreibe", "beschreib", "beschreiben", "zeig", "zeige", "mir", "siehst", "du",
+    "sieht", "man", "zu", "sehen", "gerade", "jetzt", "bitte", "los", "an", "da", "im", "am", "gibt", "es",
+    "passiert", "laeuft", "kannst", "mal", "drauf", "darauf",
+}
+
+
+def _screen_args(message: str, t: str) -> dict:
+    """Allgemeine Frage → {}; spezielle Frage ("was steht in der Fehlermeldung …") wird weitergegeben."""
+    if set(t.split()) - _SCREEN_WORDS:
+        return {"question": message.strip()[:300]}
+    return {}
+
+
+def _volume(t: str) -> dict | None:
+    if re.search(r"\bunmute\b|\bton (wieder )?(an|ein)\b|\bton einschalten\b|stumm aus\b|"
+                 r"nicht (mehr )?stumm|stummschaltung (aus|aufheben|beenden)", t):
+        return {"action": "unmute"}
+    if re.search(r"\bstumm\b|stummschalt|\bmute\b|\bton (aus|ausschalten|ausmachen|ab)\b", t):
+        return {"action": "mute"}
+    m = re.search(r"(lautstaerke|volume|\blaut\b)\D{0,12}?(\d{1,3})\s*(%|prozent)?", t) or re.search(
+        r"\b(\d{1,3})\s*(%|prozent)?\s*(lautstaerke|volume)\b", t
+    )
+    if m:
+        number = next(g for g in m.groups() if g and g.isdigit())
+        return {"action": "set", "percent": int(number)}
+    if re.search(r"\blauter\b", t):
+        return {"action": "up"}
+    if re.search(r"\bleiser\b", t):
+        return {"action": "down"}
+    if re.search(r"\bwie laut\b|^(lautstaerke|volume)$", t):
+        return {"action": "get"}
+    return None
+
+
+def _media(t: str) -> str | None:
+    media = r"(musik|wiedergabe|video|lied|song|titel|track|player)"
+    if re.search(rf"^(stopp?e?|stop|halte?)\s+(die |das |den )?{media}( an)?$", t) or re.search(
+        rf"^{media} (stoppen|anhalten|beenden|aus)$", t
+    ):
+        return "stop"
+    if re.search(r"(naechste[nrsm]?|next) (titel|lied|song|track)|\bskip\b|ueberspring|^naechste[nrsm]?$", t):
+        return "next"
+    if re.search(r"(vorherige[nrsm]?|letzte[nrsm]?|vorige[nrsm]?|previous) (titel|lied|song|track)|"
+                 r"(titel|lied|song|track) zurueck", t):
+        return "previous"
+    if re.search(rf"\bpause\b|\bpausier\w*|\bplay\b|^(mach )?weiter( bitte)?$|^(abspielen|fortsetzen)$|"
+                 rf"{media} (abspielen|fortsetzen|weiter|an)$", t):
+        return "play_pause"
+    return None
+
+
 def parse(message: str, config: AppConfig) -> list[tuple[str, dict]] | str:
     """Gibt eine Liste (tool, args) zurück oder einen Antworttext, wenn nichts passt."""
     t = _prep(message)
     words = set(t.split())
+
+    # --- Webseite öffnen (vor allem anderen: "öffne <domain>" ist kein Programm) --------
+    url = _url_request(message)
+    if url is not None:
+        return [("desktop_open_url", {"url": url})]
+
+    # --- PC sperren -----------------------------------------------------------
+    if re.search(r"\bsperr", t) and re.search(r"\b(pc|rechner|computer|bildschirm|windows|laptop)\b", t):
+        return [("desktop_lock", {})]
 
     # --- PC -------------------------------------------------------------------
     shutdown_words = re.search(r"herunterfahr|runterfahr|shutdown|ausschalt|ausmach|\baus\b", t) or re.search(
@@ -60,23 +165,49 @@ def parse(message: str, config: AppConfig) -> list[tuple[str, dict]] | str:
             return [("pc_shutdown_cancel", {})]
         return [("pc_shutdown", {})]
 
-    # --- Skripte --------------------------------------------------------------
+    # --- Bildschirm beschreiben --------------------------------------------------
+    if re.search(r"\b(bildschirm|monitor|screen)\b", t) and re.search(
+        r"\b(was|beschreib\w*|zeig\w*|siehst|sehen|steht|erkennst)\b", t
+    ):
+        return [("screen_describe", _screen_args(message, t))]
+
+    # --- Lautstärke und Medientasten ---------------------------------------------
+    volume = _volume(t)
+    if volume is not None:
+        return [("desktop_volume", volume)]
+    media = _media(t)
+    if media is not None:
+        return [("desktop_media", {"action": media})]
+
+    # --- Skripte und Programme --------------------------------------------------
     if re.search(r"\b(skripte?|scripts?)\b", t) and re.search(r"welche|liste|status|laufen|zeig", t):
         return [("scripts_list", {})]
+    if re.search(r"\b(programme|apps)\b", t) and re.search(r"welche|liste|status|laufen|zeig", t):
+        return [("desktop_apps_list", {})]
+    m = re.match(r"^(?:wechsle|wechsel|fokussiere)\s+(?:zu[mr]?\s+|auf\s+)?(.+)$", t) or re.match(
+        r"^(?:hol|hole)\s+(.+?)\s+(?:nach vorne|in den vordergrund)$", t
+    )
+    if m and (app := _find_app(config, m.group(1))) is not None:
+        return [("desktop_focus", {"app_id": app.id})]
     verb = phrase = None
-    m = re.match(r"^(starte|start|oeffne|stoppe|stopp|stop|beende|schliesse)\s+(.+)$", t)
+    m = re.match(r"^(starte|start|oeffne|stoppe|stopp|stop|beende|schliesse|schliess)\s+(.+)$", t)
     if m:
         verb, phrase = m.group(1), m.group(2)
-    elif m := re.match(r"^(.+?)\s+(starten|stoppen|beenden)$", t):
+    elif m := re.match(r"^(.+?)\s+(starten|stoppen|beenden|schliessen|oeffnen)$", t):
         verb, phrase = m.group(2), m.group(1)
     if verb and phrase:
+        starting = verb.startswith(("start", "oeffne"))
         script = _find_script(config, phrase)
         if script is not None:
-            tool = "scripts_start" if verb.startswith(("start", "oeffne")) else "scripts_stop"
+            tool = "scripts_start" if starting else "scripts_stop"
             return [(tool, {"script_id": script.id})]
+        app = _find_app(config, phrase)
+        if app is not None:
+            return [("desktop_app_start" if starting else "desktop_app_close", {"app_id": app.id})]
         if not re.search(r"licht|led|lampe|effekt", phrase):
             known = ", ".join(s.label for s in config.scripts) or "keine"
-            return f"Skript „{phrase}“ kenne ich nicht. Verfügbar: {known}."
+            programs = ", ".join(a.label for a in config.desktop.apps) or "keine"
+            return f"„{phrase}“ kenne ich nicht. Skripte: {known}. Programme: {programs}."
 
     # --- Sensoren -------------------------------------------------------------
     if re.search(r"wie (warm|kalt)|temperatur|grad\b|luftfeucht|feuchtigkeit|sensor|raumklima", t):
@@ -166,6 +297,26 @@ def _describe(record: dict) -> str:
         return "Bitte das Herunterfahren in der Oberfläche bestätigen."
     if tool == "pc_shutdown_cancel":
         return res.get("message", "Herunterfahren abgebrochen.")
+    if tool == "desktop_volume":
+        if res.get("muted"):
+            return f"Ton aus (Lautstärke {res.get('percent')} %)."
+        return f"Lautstärke {res.get('percent')} %."
+    if tool == "desktop_media":
+        return {
+            "play_pause": "Wiedergabe umgeschaltet.",
+            "next": "Nächster Titel.",
+            "previous": "Vorheriger Titel.",
+            "stop": "Wiedergabe gestoppt.",
+        }.get(res.get("action"), "Erledigt.")
+    if tool == "desktop_app_close" and res.get("status") == "confirm_required":
+        return f"Bitte das Schließen von {res.get('label', 'dem Programm')} in der Oberfläche bestätigen."
+    if tool == "desktop_apps_list":
+        items = [f"{a['label']}: {'läuft' if a['running'] else 'aus'}" for a in res.get("apps", [])]
+        return " · ".join(items) or "Keine Programme freigegeben."
+    if tool == "screen_describe":
+        return res.get("description", "Keine Beschreibung.")
+    if tool.startswith("desktop_") and res.get("message"):
+        return res["message"]
     return "Erledigt."
 
 

@@ -100,3 +100,66 @@ async def test_non_windows_refuses(factory, monkeypatch):
         r = await c.post("/api/tools/pc_shutdown_cancel")
     assert r.status_code == 400
     assert started == []
+
+
+# --- Verallgemeinerte Bestätigungen -------------------------------------------------------
+
+
+def test_confirm_store_carries_params_once():
+    store = pc.ConfirmStore()
+    params = {"app_id": "editor", "nested": {"a": 1}}
+    cid = store.create("desktop_app_close", params)
+    params["nested"]["a"] = 2  # spätere Änderung darf die gespeicherte Aktion nicht verändern
+    pending = store.consume(cid)
+    assert pending.action == "desktop_app_close" and pending.params == {"app_id": "editor", "nested": {"a": 1}}
+    assert store.consume(cid) is None
+
+
+def test_confirm_store_is_bounded():
+    store = pc.ConfirmStore(clock=lambda: 0.0)
+    ids = [store.create("pc_shutdown") for _ in range(pc.MAX_PENDING + 5)]
+    assert store.consume(ids[0]) is None  # älteste verworfen
+    assert store.consume(ids[-1]) is not None
+
+
+def test_confirm_action_registry_rejects_foreign_override():
+    def other(_ctx, _params):
+        return {}
+
+    with pytest.raises(ValueError):
+        pc.register_confirm_action("pc_shutdown", other)
+    assert pc.CONFIRM_ACTIONS["pc_shutdown"] is pc._do_shutdown
+
+
+def test_request_confirmation_needs_registered_action(factory):
+    app, _ = factory()
+    with pytest.raises(pc.ToolError):
+        pc.request_confirmation(app.state.registry.ctx, "format_c", None, prompt="?", message="?")
+
+
+async def test_shutdown_result_has_prompt_and_action(factory, calls):
+    app, token = factory()
+    async with client_for(app, token=token) as c:
+        res = (await c.post("/api/tools/pc_shutdown")).json()["result"]
+        assert res["action"] == "pc_shutdown" and "15 s" in res["prompt"]
+        confirmed = (await c.post(f"/api/confirm/{res['confirm_id']}")).json()["result"]
+    assert confirmed["status"] == "shutdown_scheduled" and confirmed["action"] == "pc_shutdown"
+    assert calls == [["shutdown", "/s", "/t", "15", "/c", "JARVIS"]]
+
+
+async def test_confirm_runs_only_the_stored_action(factory, calls, monkeypatch):
+    """Eine Bestätigung für 'Programm schließen' fährt nie den PC herunter (und umgekehrt)."""
+    from app.tools import desktop
+
+    closed = []
+    monkeypatch.setattr(desktop, "is_windows", lambda: True)
+    monkeypatch.setattr(desktop, "_user_processes", lambda: [(101, "notepad.exe")])
+    monkeypatch.setattr(desktop, "_close_processes", lambda pids, name, grace=5: closed.append(pids) or False)
+    app, token = factory()
+    async with client_for(app, token=token) as c:
+        close_id = (await c.post("/api/tools/desktop_app_close", json={"app_id": "editor"})).json()["result"]["confirm_id"]
+        shutdown_id = (await c.post("/api/tools/pc_shutdown")).json()["result"]["confirm_id"]
+        assert (await c.post(f"/api/confirm/{close_id}")).json()["result"]["status"] == "closed"
+        assert calls == [] and closed == [[101]]
+        assert (await c.post(f"/api/confirm/{shutdown_id}")).json()["result"]["status"] == "shutdown_scheduled"
+    assert len(calls) == 1 and closed == [[101]]

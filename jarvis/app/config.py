@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -87,8 +88,11 @@ class SensorConfig(_Strict):
     unit: str = ""
 
 
+ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
+
+
 class ScriptConfig(_Strict):
-    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    id: str = Field(pattern=ID_PATTERN)
     label: str = Field(min_length=1)
     cwd: str
     command: list[str] = Field(min_length=1)
@@ -100,12 +104,157 @@ class ScriptConfig(_Strict):
         return not is_todo(self.cwd) and not is_todo(self.command)
 
 
+# Prozesse, die JARVIS nie starten/schließen/fokussieren darf – auch nicht, wenn sie in
+# desktop.apps stehen: Windows-Kernprozesse, die Shell und JARVIS bzw. Ollama selbst.
+PROTECTED_PROCESS_NAMES = frozenset(
+    {
+        "explorer.exe", "dwm.exe", "winlogon.exe", "csrss.exe", "lsass.exe", "services.exe",
+        "smss.exe", "svchost.exe", "wininit.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe",
+        "runtimebroker.exe", "fontdrvhost.exe", "conhost.exe", "taskmgr.exe", "logonui.exe",
+        "lockapp.exe", "searchhost.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe",
+        "python.exe", "pythonw.exe", "py.exe", "pyw.exe", "uv.exe", "ollama.exe", "ollama app.exe",
+        "tailscale.exe", "tailscaled.exe", "tailscale-ipn.exe",
+    }
+)
+_PROCESS_NAME_FORBIDDEN = set('\\/:*?"<>|')
+# Ein Label eines Domainnamens (nach IDNA, also nur ASCII)
+_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def normalize_domain(value: str) -> str:
+    """Domainnamen vereinheitlichen (klein, ohne Punkt am Ende, Umlaute als IDNA/Punycode).
+
+    Wirft ValueError mit deutscher Meldung, wenn es kein gültiger Domainname ist.
+    """
+    host = value.strip().lower().rstrip(".")
+    if host.startswith("*."):
+        host = host[2:]
+    if not host or "://" in host or any(c in host for c in "/:@\\ \t?#"):
+        raise ValueError(f"'{value}' ist kein Domainname (nur z. B. youtube.com, ohne https:// und Pfad)")
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise ValueError(f"'{value}' ist kein gültiger Domainname") from None
+    labels = host.split(".")
+    if len(host) > 253 or not all(_DOMAIN_LABEL.match(label) for label in labels):
+        raise ValueError(f"'{value}' ist kein gültiger Domainname")
+    return host
+
+
+class DesktopAppConfig(_Strict):
+    """Ein Programm, das JARVIS starten, schließen und in den Vordergrund holen darf."""
+
+    id: str = Field(pattern=ID_PATTERN)
+    label: str = Field(min_length=1, max_length=60)
+    # Argumentliste wie bei scripts (kein Shell-String); z. B. ["notepad.exe"]
+    command: list[str] = Field(min_length=1)
+    # Dateiname des laufenden Prozesses (ohne Pfad), z. B. "notepad.exe" – zum Erkennen und Schließen
+    process_name: str = Field(min_length=1, max_length=100)
+    # Teil des Fenstertitels, falls das Fenster einem anderen Prozess gehört (z. B. Store-Apps)
+    window_title: str = Field("", max_length=200)
+
+    @field_validator("process_name")
+    @classmethod
+    def _check_process_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(c in _PROCESS_NAME_FORBIDDEN for c in value):
+            raise ValueError("nur der Dateiname des Prozesses ohne Pfad, z. B. notepad.exe")
+        if value.lower() in PROTECTED_PROCESS_NAMES:
+            raise ValueError(f"'{value}' ist ein System-, Shell- oder JARVIS-Prozess und wird nicht gesteuert")
+        return value
+
+    @property
+    def is_configured(self) -> bool:
+        return not is_todo(self.command) and not is_todo(self.process_name)
+
+
+def _default_apps() -> list[DesktopAppConfig]:
+    return [
+        DesktopAppConfig(
+            id="editor", label="Editor", command=["notepad.exe"], process_name="notepad.exe", window_title="Editor"
+        ),
+        DesktopAppConfig(
+            id="rechner", label="Rechner", command=["calc.exe"], process_name="CalculatorApp.exe",
+            window_title="Rechner",
+        ),
+    ]
+
+
+class DesktopConfig(_Strict):
+    enabled: bool = True
+    allow_open_url: bool = True
+    # Leer = alle Domains erlaubt; sonst nur diese Domains und ihre Subdomains.
+    allowed_domains: list[str] = Field(default_factory=list)
+    apps: list[DesktopAppConfig] = Field(default_factory=_default_apps)
+
+    @field_validator("allowed_domains")
+    @classmethod
+    def _check_domains(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(normalize_domain(v) for v in value))
+
+    @field_validator("apps")
+    @classmethod
+    def _unique_ids(cls, value: list[DesktopAppConfig]) -> list[DesktopAppConfig]:
+        seen: set[str] = set()
+        for app in value:
+            if app.id in seen:
+                raise ValueError(f"Programm-ID '{app.id}' ist doppelt vergeben")
+            seen.add(app.id)
+        return value
+
+    def app(self, app_id: str) -> DesktopAppConfig | None:
+        return next((a for a in self.apps if a.id == app_id), None)
+
+
+class VisionConfig(_Strict):
+    # Ollama-Modell mit capability "vision" (darf gleich llm.model sein)
+    model: str = "TODO_VISIONMODELL"
+    max_side: int = Field(1568, ge=256, le=4096)
+    jpeg_quality: int = Field(80, ge=30, le=95)
+    monitor: int = Field(1, ge=0, le=16)  # 1 = Hauptbildschirm, 0 = alle Bildschirme zusammen
+    timeout: float = Field(90, gt=0, le=600)
+
+    @property
+    def configured(self) -> bool:
+        return not is_todo(self.model)
+
+
+class TTSConfig(_Strict):
+    enabled: bool = True
+    speak_replies: bool = True
+    voice: str = Field("", max_length=200)  # "" = erste installierte deutsche Stimme
+    rate: int = Field(0, ge=-10, le=10)
+    volume: int = Field(100, ge=0, le=100)
+
+
+class STTConfig(_Strict):
+    enabled: bool = False
+    model: str = Field("small", min_length=1, max_length=200)
+    device: Literal["cpu", "cuda", "auto"] = "cpu"
+    # Werte laut CTranslate2-Doku (docs/quantization.md)
+    compute_type: Literal[
+        "default", "auto", "int8", "int8_float32", "int8_float16", "int8_bfloat16", "int16", "float16",
+        "bfloat16", "float32",
+    ] = "int8"
+    language: str = Field("de", pattern=r"^([a-z]{2,3})?$")  # "" = automatisch erkennen
+    max_seconds: int = Field(30, ge=1, le=120)
+    download_root: str = ""  # "" = <state>/whisper
+
+
+class VoiceConfig(_Strict):
+    tts: TTSConfig = Field(default_factory=TTSConfig)
+    stt: STTConfig = Field(default_factory=STTConfig)
+
+
 class AppConfig(_Strict):
     server: ServerConfig = Field(default_factory=ServerConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     wled: WLEDConfig = Field(default_factory=WLEDConfig)
     sensors: list[SensorConfig] = Field(default_factory=list)
     scripts: list[ScriptConfig] = Field(default_factory=list)
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
 
     @field_validator("scripts")
     @classmethod
@@ -191,4 +340,8 @@ def config_warnings(cfg: AppConfig) -> list[str]:
     for sc in cfg.scripts:
         if not sc.is_configured:
             warnings.append(f"Skript '{sc.id}': cwd/command noch TODO.")
+    if cfg.desktop.enabled:
+        for app in cfg.desktop.apps:
+            if not app.is_configured:
+                warnings.append(f"Programm '{app.id}': command/process_name noch TODO.")
     return warnings

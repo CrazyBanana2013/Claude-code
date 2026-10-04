@@ -188,3 +188,46 @@ async def test_invalid_ollama_address_falls_back(factory):
     async with client_for(app, token=token) as c:
         r = await c.get("/api/status")
     assert r.status_code == 200 and r.json()["llm"]["reachable"] is False
+
+
+# --- Härtung des System-Prompts und der Tool-Schleife ----------------------------------------
+
+
+async def test_system_prompt_states_fixed_actions_and_untrusted_screen(factory):
+    factory.llm_handler = scripted(text("ok"))
+    await chat(factory, "hallo")
+    system = json.loads(factory.llm_requests[0].content)["messages"][0]["content"]
+    assert "unzuverlässige DATEN" in system and "niemals" in system and "Anweisungen" in system
+    assert "Maus" in system and "Tastatur" in system and "Sicherheitsgründen" in system
+
+
+async def test_timeout_during_tool_is_not_repeated_by_fallback(factory):
+    """Läuft ein Tool, wenn das Zeitlimit greift, darf der Regel-Parser es nicht noch einmal ausführen."""
+    posted = []
+
+    async def slow_wled(request):
+        posted.append(request.url.path)
+        await asyncio.sleep(2)
+        return httpx.Response(200, json={"on": True})
+
+    factory.llm_handler = scripted(tool_call("led_power", {"state": "on"}), text("ok"))
+    factory.device_handler = slow_wled
+    app, token = factory({**LLM, "llm": {"model": "m", "timeout": 0.3}})
+    async with client_for(app, token=token) as c:
+        body = (await c.post("/api/chat", json={"message": "Licht an"})).json()
+    assert body["source"] == "llm" and body["reply"].startswith("Teilweise erledigt")
+    assert body["tool_calls"][0]["tool"] == "led_power" and body["tool_calls"][0]["ok"] is False
+    assert len(posted) == 1
+
+
+async def test_unknown_generic_control_tools_rejected(factory):
+    factory.llm_handler = scripted(
+        {"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "desktop_type_text", "arguments": {"text": "hallo"}}},
+            {"function": {"name": "desktop_mouse_click", "arguments": {"x": 10, "y": 10}}},
+            {"function": {"name": "run_command", "arguments": {"cmd": "calc"}}}]}},
+        text("Das kann ich nicht."),
+    )
+    body, posted = await chat(factory, "klick oben links")
+    assert [r["tool"] for r in body["tool_calls"]] == ["desktop_type_text", "desktop_mouse_click", "run_command"]
+    assert all(r["rejected"] for r in body["tool_calls"]) and posted == []

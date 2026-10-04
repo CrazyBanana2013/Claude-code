@@ -1,4 +1,4 @@
-"""FastAPI-App: JARVIS-Oberfläche, Tool-Endpunkte, Chat."""
+"""FastAPI-App: JARVIS-Oberfläche, Tool-Endpunkte, Chat, Stimme (/api/voice/*)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
+import anyio
 import httpx
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app import fallback
 from app.auth import TokenAuth, load_or_create_token
@@ -21,6 +22,8 @@ from app.llm import OllamaAgent
 from app.netguard import NetGuardMiddleware
 from app.tools import register_all
 from app.tools.registry import Registry, ToolArgumentError, ToolContext, ToolError, ToolNotFound
+from app.voice import VoiceService
+from app.voice.stt import STTError, read_upload
 
 log = logging.getLogger("jarvis")
 
@@ -29,6 +32,17 @@ WEB_INDEX = PROJECT_DIR / "web" / "index.html"
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=500)
+    # Antwort am PC vorlesen? None = Vorgabe voice.tts.speak_replies
+    speak: bool | None = None
+
+
+class SpeakRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=1000)
+
+
+def _error(message: str, status_code: int) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": message}, status_code=status_code)
 
 
 def create_app(
@@ -38,6 +52,7 @@ def create_app(
     state_dir: Path,
     http_client: httpx.AsyncClient | None = None,
     llm_client: httpx.AsyncClient | None = None,
+    voice: VoiceService | None = None,
     announce: Callable[[str], None] = print,
 ) -> FastAPI:
     token = load_or_create_token(secrets_path, announce)
@@ -51,10 +66,12 @@ def create_app(
     registry = Registry(ctx)
     register_all(registry)
     agent = OllamaAgent(config.llm, registry, llm_http)
+    voice = voice or VoiceService.from_config(config, state_dir)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
+        await anyio.to_thread.run_sync(voice.close)
         await http.aclose()
         if llm_http is not http:
             await llm_http.aclose()
@@ -64,6 +81,7 @@ def create_app(
     app.state.registry = registry
     app.state.agent = agent
     app.state.auth = auth
+    app.state.voice = voice
 
     @app.exception_handler(ToolNotFound)
     async def _not_found(_req: Request, exc: ToolNotFound):
@@ -109,7 +127,40 @@ def create_app(
 
     @api.post("/chat")
     async def chat(req: ChatRequest):
-        return await answer_chat(req.message, agent, registry, config)
+        response = await answer_chat(req.message, agent, registry, config)
+        wanted = voice.tts.speak_replies if req.speak is None else req.speak
+        # speak() reiht nur ein und kehrt sofort zurück – die HTTP-Antwort wartet nie auf die Stimme.
+        response["spoken"] = bool(wanted) and voice.tts.speak(str(response.get("reply") or ""))
+        return response
+
+    # --- Stimme ------------------------------------------------------------------------
+    @api.get("/voice/status")
+    async def voice_status():
+        return await anyio.to_thread.run_sync(voice.status)
+
+    @api.post("/voice/speak")
+    async def voice_speak(req: SpeakRequest):
+        reason = voice.tts.unavailable_reason()
+        if reason:
+            return _error(reason, 503)
+        if not voice.tts.speak(req.text):
+            return _error("Kein Text zum Sprechen.", 400)
+        return {"ok": True, "queued": True}
+
+    @api.post("/voice/stop")
+    async def voice_stop():
+        voice.tts.stop()
+        return {"ok": True}
+
+    @api.post("/voice/stt")
+    async def voice_stt(request: Request):
+        # Kein UploadFile-Parameter: FastAPI würde den Body sonst schon VOR der Token-Prüfung lesen.
+        try:
+            voice.stt.check_basic()  # 503 ohne den Upload überhaupt zu lesen
+            data, content_type = await read_upload(request)
+            return await anyio.to_thread.run_sync(voice.stt.transcribe, data, content_type)
+        except STTError as exc:
+            return _error(str(exc), exc.status_code)
 
     app.include_router(api)
     return app
