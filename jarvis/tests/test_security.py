@@ -116,3 +116,27 @@ def test_token_created_once(tmp_path):
     assert t1 == t2
     assert len(t1) >= 43
     assert len(messages) == 1 and t1 in messages[0]
+
+
+async def test_every_api_route_except_health_needs_token(factory):
+    """Auch künftige Routen (z. B. /api/voice/*): alles unter /api/ außer /api/health verlangt den Token."""
+    from fastapi.routing import APIRoute
+
+    def walk(routes):  # FastAPI legt eingebundene Router als eigene Knoten ab (original_router)
+        for r in routes:
+            if isinstance(r, APIRoute):
+                yield r
+            elif getattr(r, "original_router", None) is not None:
+                yield from walk(r.original_router.routes)
+
+    app, _ = factory()
+    routes = [(m, r.path) for r in walk(app.routes) if r.path.startswith("/api/") for m in sorted(r.methods)]
+    paths = {p for _m, p in routes}
+    assert {"/api/voice/status", "/api/voice/speak", "/api/voice/stop", "/api/voice/stt"} <= paths
+    async with client_for(app) as c:
+        for method, path in routes:
+            if path == "/api/health":
+                continue
+            r = await c.request(method, path.replace("{name}", "led_status").replace("{confirm_id}", "abc"),
+                                json={"message": "hi", "text": "hi"})
+            assert r.status_code in (401, 429), (method, path, r.status_code)

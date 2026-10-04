@@ -1506,6 +1506,8 @@ await test("Spracheingabe (gemockt): Aufnahme → /api/voice/stt → erkannter T
   await page.waitForFunction(() => document.getElementById("mic").getAttribute("aria-pressed") === "true" && document.getElementById("mic").classList.contains("rec"));
   await page.waitForFunction(() => /^Höre zu … \d+ s/.test(document.getElementById("cmd-text").textContent));
   assert.equal(await page.getAttribute("#mic", "aria-label"), "Aufnahme beenden und senden");
+  // Wer spricht, unterbricht die Ansage am PC (Whisper soll nicht JARVIS' eigene Stimme hören)
+  await until(() => rec.api.filter((a) => a.path === "/api/voice/stop" && a.method === "POST").length === 1, "Ansage beim Aufnahmestart gestoppt");
   await shot(page, "voice-m390-recording");
   await sleep(700);
   const chat = page.waitForRequest((q) => new URL(q.url()).pathname === "/api/chat");
@@ -1534,12 +1536,18 @@ await test("Spracheingabe (gemockt): Aufnahme → /api/voice/stt → erkannter T
   sttFail = true;
   rec.allow.add("503 /api/voice/stt");
   const chats = rec.api.filter((a) => a.path === "/api/chat").length;
+  const placeholder = await page.getAttribute("#chat-input", "placeholder");
   await page.click("#chat-mic");
   await page.waitForFunction(() => document.getElementById("chat-mic").classList.contains("rec"));
+  // im offenen Befehl-Panel ist die Leiste verdeckt: Aufnahmezeit steht als Platzhalter im Eingabefeld
+  await page.waitForFunction(() => /^Höre zu … \d+ s$/.test(document.getElementById("chat-input").placeholder));
+  assert.match(await page.getAttribute("#chat-input", "class") || "", /\blive\b/);
   await shot(page, "voice-m390-chat-recording");
   await sleep(600);
   await page.click("#chat-mic");
   await toastIs(page, /^Whisper-Modell fehlt/, true);
+  assert.equal(await page.getAttribute("#chat-input", "placeholder"), placeholder, "Platzhalter nach der Aufnahme wieder normal");
+  assert.doesNotMatch(await page.getAttribute("#chat-input", "class") || "", /\blive\b/);
   assert.equal(rec.api.filter((a) => a.path === "/api/chat").length, chats, "ohne Text keine Chat-Anfrage");
   await page.waitForFunction(() => document.getElementById("chat-mic").getAttribute("aria-busy") !== "true");
   // Zu kurz (< 0,5 s): nichts hochladen
@@ -1660,6 +1668,12 @@ await test("System: Stimme, Mikrofon und Bildschirm im Diagnose-Panel (echter Se
   await waitText(page, "#sys-vision", "qwen2.5vl:7b · bereit");
   assert.doesNotMatch(await page.getAttribute("#mic", "class"), /\bna\b/);
   await shot(page, "voice-m390-system-on");
+  // Hinweis zur Stimmwahl (keine deutsche Stimme installiert) steht im System-Panel
+  const NOTE = "Keine deutsche SAPI-Stimme installiert – es spricht die Windows-Standardstimme.";
+  await page.unroute("**/api/voice/status");
+  await page.route("**/api/voice/status", (r) => r.fulfill(json(200, { ...VOICE_OK, tts: { ...VOICE_OK.tts, voice: "Microsoft Zira Desktop", note: NOTE } })));
+  await page.click("#sys-refresh");
+  await waitText(page, "#sys-tts", "bereit · Microsoft Zira Desktop · liest vor · " + NOTE);
 });
 
 await test("Layout 320/360 px, quer und Desktop: PC-Panel, Befehl-Panel und Leiste mit Mikrofon ohne Querscrollen, Tap-Ziele ≥ 44 px", async () => {

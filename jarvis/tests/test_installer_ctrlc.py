@@ -67,6 +67,10 @@ class Terminal:
         return text.encode("utf-8") in self.output
 
     def ctrl_c(self) -> None:
+        # Kurz weiterlesen, bevor Strg+C kommt: Die Frage steht schon da, aber PowerShell schaltet das
+        # Terminal evtl. erst danach in den Lesemodus (Cursor-Abfrage). Unter Last ging Strg+C sonst
+        # gelegentlich verloren und der Test wartete vergeblich auf das Ende.
+        self._pump(1.0)
         os.write(self.fd, b"\x03")
 
     def finish(self, seconds: float = 60) -> int:

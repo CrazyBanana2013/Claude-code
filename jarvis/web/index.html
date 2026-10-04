@@ -333,6 +333,7 @@
     font: 16px var(--ui); color: var(--text); background: rgba(1, 8, 14, .9); border: 1px solid var(--line-2);
   }
   .panel input[type=text]::placeholder, dialog input::placeholder { color: #5f8796; }
+  #chat-input.live::placeholder { color: #ffb3bb; }   /* Aufnahme läuft: Status als Platzhalter */
   input:focus { outline: none; border-color: var(--cy); box-shadow: 0 0 0 1px var(--cy), 0 0 14px rgba(var(--cy-rgb), .35); }
 
   /* Licht */
@@ -2698,10 +2699,15 @@
     $("log").append(node);
     $("log").scrollTop = $("log").scrollHeight;
   }
+  const CHAT_PH = $("chat-input").placeholder;
   function setCmd(text) {
     const c = $("cmd-text");
     c.textContent = text;
     c.classList.remove("hint", "live");
+    // Live-Anzeige der Aufnahme (liveCmd) auch im Eingabefeld wieder zurücknehmen
+    const input = $("chat-input");
+    input.placeholder = CHAT_PH;
+    input.classList.remove("live");
   }
   // opts.voice = Ergebnis der Spracherkennung ({text, language, duration}) → Eingabe als „gesprochen“ markieren
   function sendChat(text, btn, opts = {}) {
@@ -2779,7 +2785,9 @@
     b.title = why || (on ? "Antworten werden am PC vorgelesen" : "Antworten werden nicht vorgelesen");
     showMic();
     const t = voiceSt && voiceSt.tts, s = voiceSt && voiceSt.stt;
-    $("sys-tts").textContent = !t ? "–" : t.available ? "bereit · " + (t.voice || "Standardstimme") + (on ? " · liest vor" : " · stumm") : t.reason || "nicht verfügbar";
+    // note = Hinweis zur Stimmwahl (z. B. keine deutsche Stimme installiert → Windows-Standardstimme)
+    $("sys-tts").textContent = !t ? "–" : t.available ? "bereit · " + (t.voice || "Standardstimme") + (on ? " · liest vor" : " · stumm")
+      + (t.note ? " · " + t.note : "") : t.reason || "nicht verfügbar";
     const parts = [];
     if (s) parts.push(s.available ? "Whisper " + s.model + (s.loaded ? " · geladen" : " · bereit") : s.reason || "nicht verfügbar");
     if (!window.isSecureContext) parts.push("Browser: nur über HTTPS (Tailscale-HTTPS, siehe README)");
@@ -2824,7 +2832,14 @@
       b.title = rec.state === "rec" ? "Tippen: Aufnahme senden" : why || "Spracheingabe: tippen, sprechen, nochmal tippen";
     }
   }
-  function liveCmd(text) { setCmd(text); $("cmd-text").classList.add("live"); }
+  // Aufnahme-Status in der Leiste und – bei offenem Befehl-Panel sichtbar – als Platzhalter im Eingabefeld
+  function liveCmd(text) {
+    setCmd(text);
+    $("cmd-text").classList.add("live");
+    const input = $("chat-input");
+    input.placeholder = text;
+    input.classList.add("live");
+  }
   function micError(e) {
     const n = e && e.name;
     if (n === "NotAllowedError" || n === "SecurityError") return "Mikrofon-Zugriff verweigert – im Browser für diese Seite erlauben.";
@@ -2845,6 +2860,8 @@
   }
   async function startRec() {
     rec.state = "busy"; showMic();   // solange die Mikrofon-Freigabe des Browsers offen ist
+    // Wer spricht, unterbricht JARVIS: laufende Ansage am PC stoppen (sonst hört Whisper am PC die eigene Stimme mit)
+    if (voiceSt && voiceSt.tts && voiceSt.tts.available) api("/api/voice/stop").catch(() => {});
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });

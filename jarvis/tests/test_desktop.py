@@ -1,6 +1,7 @@
 """Feste PC-Aktionen (app/tools/desktop.py) – Windows komplett gemockt."""
 
 import ctypes
+import ipaddress
 import json
 import os
 import subprocess
@@ -48,6 +49,10 @@ def win(monkeypatch):
     monkeypatch.setattr(desktop, "_send_media_key", lambda vk, scan: calls.append(("key", vk, scan)))
     monkeypatch.setattr(desktop, "_lock_workstation", lambda: calls.append(("lock",)) or state["lock"])
     monkeypatch.setattr(desktop, "_open_in_browser", lambda url: calls.append(("open", url)))
+    # DNS: Vorgabe öffentliche Adresse (die Dokumentationsbereiche wie 192.0.2.0/24 gelten nicht als global)
+    state["dns"], state["resolved"] = {}, []
+    monkeypatch.setattr(desktop, "_resolve_host", lambda host, timeout=desktop.DNS_TIMEOUT: (
+        state["resolved"].append(host) or list(state["dns"].get(host, ["8.8.4.4"]))))
     # Schutz: pc_shutdown darf in diesen Tests nie einen Prozess starten
     monkeypatch.setattr(pc.subprocess, "run", lambda *a, **k: calls.append(("subprocess", a)))
     return SimpleNamespace(calls=calls, state=state)
@@ -403,6 +408,50 @@ async def test_open_url_local_name_only_when_allowlisted(factory, win):
     # Private IP-Adressen bleiben auch dann gesperrt
     assert (await run(factory, "desktop_open_url", {"url": "http://192.168.1.1/"}, overrides)).status_code == 400
     assert win.calls == [("open", "http://fritz.box/")]
+
+
+@pytest.mark.parametrize("addresses", [
+    ["127.0.0.1"], ["192.168.1.50"], ["10.0.0.5"], ["100.101.102.103"], ["::1"], ["fe80::1%12"],
+    ["8.8.4.4", "192.168.1.50"], ["::ffff:192.168.1.50"], ["64:ff9b::c0a8:132"],
+])
+async def test_open_url_rejects_domains_resolving_to_home_network(factory, win, addresses):
+    """z. B. 192.168.1.50.nip.io oder localtest.me: der Name sieht öffentlich aus, zeigt aber ins Heimnetz."""
+    win.state["dns"]["trick.example"] = addresses
+    r = await run(factory, "desktop_open_url", {"url": "http://trick.example/win&T=0"})
+    assert r.status_code == 400 and "zeigt auf eine Adresse im Heimnetz" in r.json()["error"], r.text
+    assert win.calls == [] and win.state["resolved"] == ["trick.example"]
+
+
+async def test_open_url_dns_check_skipped_for_allowlisted_and_unresolvable(factory, win):
+    overrides = {"desktop": {"allowed_domains": ["fritz.box", "example.org"]}}
+    win.state["dns"]["fritz.box"] = ["192.168.1.1"]
+    assert (await run(factory, "desktop_open_url", {"url": "http://fritz.box/"}, overrides)).status_code == 200
+    assert win.state["resolved"] == []  # ausdrücklich freigegeben: keine DNS-Prüfung
+    win.state["dns"]["nirgends.example.org"] = []  # nicht auflösbar → Browser zeigt seine Fehlerseite
+    r = await run(factory, "desktop_open_url", {"url": "https://nirgends.example.org/"})
+    assert r.status_code == 200, r.text
+    assert win.calls == [("open", "http://fritz.box/"), ("open", "https://nirgends.example.org/")]
+
+
+async def test_open_url_ip_literal_is_not_resolved(factory, win):
+    assert (await run(factory, "desktop_open_url", {"url": "https://8.8.8.8/"})).status_code == 200
+    assert win.state["resolved"] == []
+
+
+@pytest.mark.parametrize("url", [
+    "http://[::127.0.0.1]/", "http://[64:ff9b::c0a8:101]/", "http://[64:ff9b:1::a00:5]/", "http://[2002:c0a8:101::1]/",
+    "http://[::ffff:7f00:1]/",
+])
+def test_validate_url_rejects_ipv4_embedded_in_ipv6(url):
+    cfg = parse_config(example_config_dict()).desktop
+    with pytest.raises(ToolError, match="Heimnetz"):
+        desktop.validate_url(url, cfg)
+
+
+def test_resolve_host_wrapper_reads_local_names():
+    """Echter Wrapper (ohne Netz): localhost steht in der hosts-Datei; Unsinn liefert eine leere Liste."""
+    assert any(ipaddress.ip_address(a.split("%")[0]).is_loopback for a in desktop._resolve_host("localhost"))
+    assert desktop._resolve_host("ungueltig..name", timeout=2) == []
 
 
 async def test_open_url_can_be_disabled(factory, win):

@@ -5,8 +5,9 @@ Aufruf (im Ordner jarvis):
 
 Das ZIP enthält genau einen Ordner JARVIS-Setup-<version>/ mit Install.cmd, Uninstall.cmd,
 README.md, config.example.yaml, pyproject.toml, uv.lock, requirements.txt, requirements-voice.txt
-(pip-Weg für das optionale Extra "voice" = Spracheingabe) sowie app/, web/, launcher/ und scripts/. Nie enthalten: tests/, .venv, state/, dist/, config.yaml, config.yaml.bak,
-secrets.yaml, __pycache__, *.pyc, .pytest_cache.
+(pip-Weg für das optionale Extra "voice" = Spracheingabe) sowie app/, web/, launcher/ und scripts/.
+Nie enthalten: tests/, .venv, state/, dist/, config.yaml, config.yaml.bak, secrets.yaml, __pycache__,
+*.pyc, .pytest_cache.
 
 - .ps1/.cmd/.bat bekommen im ZIP CRLF-Zeilenenden und müssen reines ASCII sein
   (Windows PowerShell 5.1 liest UTF-8 ohne BOM als ANSI). Andere Textdateien (.py, .md, .yaml,

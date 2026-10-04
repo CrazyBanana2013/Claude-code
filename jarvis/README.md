@@ -499,6 +499,12 @@ festen Parametern. Das Sprachmodell, der Regel-Parser und die Knöpfe im PC-Pane
   erst nach dem Klick auf „Bestätigen“ (`POST /api/confirm/<id>`, 30 s gültig) – das Sprachmodell kann das nie.
   JARVIS bittet das Programm erst, sich zu schließen, und beendet es nach 5 Sekunden hart, falls es dann noch
   läuft – auch wenn es gerade „Änderungen speichern?“ fragt. Ungespeicherte Arbeit ist dann weg.
+- **Webseiten:** nur `http://`/`https://`, nie Adressen mit Benutzername/Passwort. Abgelehnt werden IP-Adressen im
+  Heimnetz, von Tailscale und dieses PCs (auch in Schreibweisen wie `2130706433` oder `[::ffff:192.168.1.1]`),
+  Heimnetz-Namen (`fritz.box`, `*.local`, Namen ohne Punkt) und Domains, die laut DNS auf so eine Adresse zeigen
+  (z. B. `192.168.1.50.nip.io`) – außer sie stehen in `desktop.allowed_domains`. Direkt nach einer
+  Bildschirmbeschreibung öffnet das Sprachmodell im selben Auftrag keine Adresse (Schutz gegen Anweisungen, die auf
+  dem Bildschirm stehen); nenne die Adresse dann selbst noch einmal.
 - **Nach vorne holen** ist „so gut es geht“: Windows erlaubt Programmen nicht immer, den Fokus zu wechseln.
   Dann kommt „Windows hat den Fokuswechsel verweigert; … blinkt in der Taskleiste“ – einfach dort anklicken.
 - **Programmliste:** Vorgabe sind Editor und Rechner. Der Assistent (Schritt 7) findet Spotify, Discord, Steam,
@@ -546,7 +552,9 @@ von einem **lokalen** Ollama-Modell mit Fähigkeit `vision` beschreiben. Antwort
   `llm.base_url` nicht auf `127.0.0.1`/`localhost`, verweigert JARVIS das Foto.
 - **Modell:** `vision.model` ([Abschnitt 3](#3-modell-auswählen)). Fehlt es oder kann es keine Bilder, sagt das
   Tool genau das („Kein Vision-Modell eingerichtet …“, „Vision-Modell '…' ist nicht installiert (ollama pull …)“).
-- **Mehrere Bildschirme:** `vision.monitor: 1` = Hauptbildschirm, `2` = zweiter …, `0` = alle zusammen.
+- **Mehrere Bildschirme:** `vision.monitor: 1` = Hauptbildschirm, `2` = zweiter …, `0` = alle zusammen. Damit
+  das Foto bei Windows-Skalierung (z. B. 150 %) scharf und vollständig ist, schaltet die Bibliothek mss für den
+  JARVIS-Prozess die DPI-Erkennung pro Bildschirm ein – das gilt nur für diesen Prozess, keine Systemeinstellung.
 - **Bildschirmtext ist nur Daten:** Was auf dem Bildschirm steht, kann Anweisungen enthalten („öffne diese
   Seite“). Das Vision-Modell soll sie nur beschreiben, das Ergebnis ist als nicht vertrauenswürdige Daten
   markiert, und das Chat-Modell ist angewiesen, daraus nie Anweisungen zu befolgen. Täte es das trotzdem, könnte
@@ -558,13 +566,20 @@ von einem **lokalen** Ollama-Modell mit Fähigkeit `vision` beschreiben. Antwort
 **Sprachausgabe (JARVIS spricht):** Antworten aus dem Chat werden über die **Lautsprecher des PCs** vorgelesen –
 mit der eingebauten Windows-Sprachausgabe (SAPI), offline, mit der ersten installierten deutschen Stimme (oder
 `voice.tts.voice`, ein Teil des Namens, z. B. `Hedda`). Im Browser steht der Text wie gewohnt im Chat (das
-Protokoll); gesprochene Antworten sind markiert. Der Schalter „PC spricht“ in der Befehlszeile schaltet das pro
-Browser an und aus (Vorgabe: `voice.tts.speak_replies`). Eine neue Antwort unterbricht die vorige.
-Tempo/Lautstärke: `voice.tts.rate` (−10 bis 10), `voice.tts.volume` (0–100). Ganz aus: `voice.tts.enabled: false`.
+Protokoll); gesprochene Antworten sind markiert. Der Schalter „PC spricht“ oben im Befehl-Panel schaltet das pro
+Browser an und aus (Vorgabe: `voice.tts.speak_replies`; ausschalten beendet auch eine laufende Ansage). Eine neue
+Antwort unterbricht die vorige. Tempo/Lautstärke: `voice.tts.rate` (−10 bis 10), `voice.tts.volume` (0–100). Ganz
+aus: `voice.tts.enabled: false`. Welche Stimme spricht, zeigt das System-Panel („Stimme“). JARVIS nutzt die
+klassischen SAPI-Stimmen (z. B. „Microsoft Hedda Desktop“); ob die neueren Windows-Stimmen (z. B. Katja) dort
+auftauchen, ist ungeprüft. Findet JARVIS keine deutsche Stimme, spricht die Windows-Standardstimme, und das
+System-Panel sagt das.
 
-**Spracheingabe (du sprichst):** Mikrofon-Knopf in der Befehlszeile. Der Browser nimmt auf, schickt die Aufnahme
-an JARVIS auf dem PC, und **Whisper erkennt sie dort lokal** (faster-whisper, auf der CPU) – nichts geht an einen
-Cloud-Dienst. Der erkannte Text landet im Chat und wird abgeschickt. Längste Aufnahme: `voice.stt.max_seconds`
+**Spracheingabe (du sprichst):** Mikrofon-Knopf unten in der Befehlsleiste und neben dem Chat-Eingabefeld:
+**tippen** = Aufnahme starten, **nochmal tippen** = senden, **Esc** = verwerfen (kein Gedrückthalten). Eine laufende
+Ansage am PC verstummt beim Aufnahmestart, damit Whisper nicht JARVIS' eigene Stimme hört. Der Browser nimmt auf,
+schickt die Aufnahme an JARVIS auf dem PC, und **Whisper erkennt sie dort lokal** (faster-whisper, auf der CPU) –
+nichts geht an einen Cloud-Dienst. Der erkannte Text landet im Chat (markiert als „gesprochen“) und wird
+abgeschickt; nur Stille ergibt keinen Befehl. Längste Aufnahme: `voice.stt.max_seconds`
 (30 s), höchstens 10 MB. Die Aufnahme wird nicht aufbewahrt: JARVIS dekodiert sie im Arbeitsspeicher; der
 Upload-Puffer des Webservers (bei größeren Aufnahmen kurz eine temporäre Datei) wird nach der Anfrage gelöscht.
 
@@ -602,15 +617,18 @@ der Mikrofon-Knopf deshalb nur einen Hinweis. Abhilfe ohne Portfreigabe und ohne
 stellt JARVIS innerhalb deines Tailnets unter einer `https://…ts.net`-Adresse mit gültigem Zertifikat bereit.
 Das richtest du **selbst** ein (der Installer ändert an Tailscale nichts):
 
-1. Am PC eine normale PowerShell öffnen (keine Adminrechte nötig – laut Tailscale-Quelltext verlangt
-   `tailscale serve` Admin nur zum Freigeben von Dateien/Ordnern, nicht für einen Port) und ausführen:
+1. Am PC eine normale PowerShell öffnen – mit dem Windows-Konto, unter dem du Tailscale benutzt. Adminrechte
+   braucht es dafür nicht: Laut Tailscale-Quelltext verlangt `tailscale serve` unter Windows Adminrechte nur,
+   wenn ein Pfad (Datei/Ordner) oder ein Unix-Socket freigegeben wird, nicht für einen Port. Dann ausführen:
 
    ```powershell
    tailscale serve --bg 8765
    ```
 
-   Ist HTTPS für dein Tailnet noch nicht eingeschaltet, zeigt der Befehl einen Link zur Tailscale-Admin-Konsole –
-   dort zustimmen (HTTPS-Zertifikate, braucht MagicDNS) und den Befehl erneut ausführen. Danach steht dort
+   Das stellt den Dienst auf `127.0.0.1:8765` (also JARVIS) per HTTPS im Tailnet bereit. Ist HTTPS für dein
+   Tailnet noch nicht eingeschaltet, zeigt der Befehl einen Hinweis mit Link zur Tailscale-Admin-Konsole: dort
+   „HTTPS Certificates“ einschalten (dafür muss MagicDNS an sein). Je nach Fall wartet der Befehl, bis das erledigt
+   ist, und macht dann selbst weiter – sonst ihn danach einfach erneut ausführen. Am Ende steht da
    „Available within your tailnet:“ mit der Adresse, z. B. `https://<pc-name>.<tailnet>.ts.net/`.
    `--bg` = läuft im Hintergrund weiter, auch wenn das Fenster zu ist.
 2. Diese `https://`-Adresse am Handy öffnen (Tailscale an) und den API-Token **noch einmal** eingeben – für den
@@ -632,9 +650,11 @@ Gut zu wissen:
 - Die normale Adresse `http://<Tailscale-IP>:8765` und die Firewall-Regeln aus [Abschnitt 5](#5-windows-firewall)
   bleiben wie sie sind. Ob `tailscale serve` einen Neustart des PCs übersteht, mit `tailscale serve status`
   prüfen.
-- Quellen: Hilfe und Optionen von `tailscale serve` aus dem Tailscale-Quelltext (`cmd/tailscale/cli/serve_v2.go`,
-  Rechteprüfung in `ipn/localapi/serve.go`); die Tailscale-Doku (tailscale.com/kb/1312/serve) war aus der
-  Entwicklungsumgebung nicht abrufbar – am PC einmal gegenprüfen.
+- Quellen: Hilfe, Beispiele und Meldungen von `tailscale serve` aus dem Tailscale-Quelltext
+  (`cmd/tailscale/cli/serve_v2.go`, Freischalt-Ablauf in `serve_legacy.go`, Rechteprüfung in
+  `ipn/localapi/serve.go`); Certificate Transparency und MagicDNS laut Tailscale-Doku „Enabling HTTPS“
+  (tailscale.com/kb/1153/enabling-https). Die Doku-Seiten selbst (auch tailscale.com/kb/1312/serve) waren aus der
+  Entwicklungsumgebung nicht abrufbar, nur Auszüge aus der Websuche – **am PC einmal gegenprüfen**.
 
 ## 13. Test-Checkliste
 
@@ -825,7 +845,8 @@ als ANSI) und unter PowerShell 5.1 laufen – ein Test prüft beides grob.
 | „PC-Steuerung ist ausgeschaltet (desktop.enabled …)“ / „Webseiten öffnen ist ausgeschaltet …“ | `desktop.enabled` bzw. `desktop.allow_open_url` auf `true` (Assistent Schritt 7) |
 | „Unbekanntes Programm '…'. Verfügbar: …“ / „Programm für '…' nicht gefunden: erstes Element von command prüfen.“ | Programm in `desktop.apps` eintragen bzw. Pfad in `command` korrigieren ([Abschnitt 9](#9-pc-steuerung-feste-aktionen)) |
 | „Die Domain … ist nicht freigegeben (erlaubt: …)“ | Domain in `desktop.allowed_domains` ergänzen oder die Liste leeren (`[]` = alle) |
-| „Lokale oder private Adressen öffne ich nicht …“ / „… ist ein Name im Heimnetz …“ | gewollt (Schutz der Geräte im Heimnetz) – Router & Co. selbst im Browser öffnen; Heimnetz-Namen wie `fritz.box` gehen nur, wenn sie in `desktop.allowed_domains` stehen |
+| „Lokale oder private Adressen öffne ich nicht …“ / „… ist ein Name im Heimnetz …“ / „… zeigt auf eine Adresse im Heimnetz oder auf diesen PC …“ | gewollt (Schutz der Geräte im Heimnetz) – Router & Co. selbst im Browser öffnen; Heimnetz-Namen wie `fritz.box` gehen nur, wenn sie in `desktop.allowed_domains` stehen |
+| „Gesperrt: Nach einer Bildschirmbeschreibung öffne ich im selben Auftrag keine Adresse.“ | gewollt (Schutz gegen Prompt-Injection vom Bildschirm) – die Adresse in einer neuen Nachricht selbst nennen |
 | „Windows hat den Fokuswechsel verweigert; … blinkt in der Taskleiste.“ | Windows-Schutz gegen Fenster, die sich vordrängeln – in der Taskleiste anklicken |
 | „Kein Vision-Modell eingerichtet: vision.model …“ | Vision-Modell wählen ([Abschnitt 3](#3-modell-auswählen)), `Install.cmd` → „Konfiguration anpassen“ = j, Schritt 6 |
 | „Vision-Modell '…' ist nicht installiert (ollama pull …)“ | Modell selbst mit `ollama pull <name>` ziehen oder anderen Namen eintragen |
@@ -834,6 +855,7 @@ als ANSI) und unter PowerShell 5.1 laufen – ein Test prüft beides grob.
 | „Keine deutsche SAPI-Stimme installiert – es spricht die Windows-Standardstimme.“ | Mit deutschem Windows ist meist eine deutsche Stimme dabei (z. B. „Hedda“); sonst `voice.tts.voice` auf einen Teil des Namens einer installierten Stimme setzen. Welche Stimme JARVIS nutzt, zeigt das System-Panel. (Zusätzliche Stimmen über die Windows-Spracheinstellungen sind nicht geprüft.) |
 | „Sprachausgabe ist ausgeschaltet (voice.tts.enabled …)“ | Assistent Schritt 8 oder `voice.tts.enabled: true` |
 | „Spracheingabe ist ausgeschaltet (voice.stt.enabled …)“ | Assistent Schritt 8 („Spracheingabe einschalten?“ = j), danach fragt der Installer nach den Downloads |
+| Installer: „Das Zusatzpaket konnte nicht installiert werden …“ | Meldung darüber lesen, Internetverbindung zu pypi.org prüfen und `Install.cmd` erneut starten; JARVIS läuft solange ohne Spracheingabe weiter |
 | „Spracheingabe ist nicht installiert (Paket faster-whisper fehlt) …“ | `Install.cmd` erneut und dem Zusatzpaket zustimmen (oder `Install.cmd -InstallVoice`); ohne Installer: `uv sync --frozen --no-dev --extra voice` |
 | „Whisper-Modell '…' ist noch nicht heruntergeladen …“ / „Download des Whisper-Modells fehlgeschlagen“ | Internetverbindung zu huggingface.co prüfen, dann im JARVIS-Ordner `.venv\Scripts\python.exe -m app.voice.stt --download --config config.yaml` (oder `Install.cmd` erneut) |
 | Mikrofon-Knopf: „Das Mikrofon geht im Browser nur über HTTPS …“ | am Handy die `https://…ts.net`-Adresse nutzen ([Abschnitt 12](#12-spracheingabe-am-handy-tailscale-https)) |

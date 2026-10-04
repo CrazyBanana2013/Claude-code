@@ -63,6 +63,8 @@ def create_app(
     http = http_client or httpx.AsyncClient(timeout=5, trust_env=False)
     llm_http = llm_client or httpx.AsyncClient(timeout=config.llm.timeout, trust_env=False)
     ctx = ToolContext(config=config, http=http, state_dir=state_dir)
+    # Ollama-Client (lokal, ohne System-Proxy) auch für screen_describe – getrennt vom Geräte-Client.
+    ctx.extras["llm_http"] = llm_http
     registry = Registry(ctx)
     register_all(registry)
     agent = OllamaAgent(config.llm, registry, llm_http)

@@ -9,7 +9,8 @@ kann nur Programm-IDs aus ``desktop.apps`` wählen.
 Alle Windows-Aufrufe stecken in kleinen Wrapper-Funktionen (``_send_media_key``, ``_lock_workstation``,
 ``_volume_get``/``_volume_set``/``_volume_mute``, ``_start_process``, ``_user_processes``,
 ``_close_processes``, ``_focus_window``, ``_open_in_browser``), die Tests ersetzen. Jeder Wrapper
-verweigert auf Nicht-Windows-Systemen selbst noch einmal (Schutz der Entwicklungsmaschine).
+verweigert auf Nicht-Windows-Systemen selbst noch einmal (Schutz der Entwicklungsmaschine). Auch die
+DNS-Abfrage für desktop_open_url (``_resolve_host``) ist ein ersetzbarer Wrapper.
 
 Quellen: Virtual-Key-Codes und Scan-Codes der Medientasten, SendInput/INPUT/KEYBDINPUT,
 LockWorkStation, SetForegroundWindow (Einschränkungen), EnumWindows, GetWindowThreadProcessId,
@@ -25,6 +26,7 @@ import ctypes
 import ipaddress
 import os
 import re
+import socket
 import subprocess
 import threading
 import warnings
@@ -64,6 +66,9 @@ LOCAL_SUFFIXES = (
 )
 _URL_SAFE = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]*$")
 _ENDS_IN_NUMBER = re.compile(r"^(0x[0-9a-f]*|[0-9]+)$")  # WHATWG-URL: so ein Host ist eine IPv4-Adresse
+# IPv6-Bereiche, die eine IPv4-Adresse in den letzten 32 Bit tragen (IPv4-kompatibel, NAT64 laut RFC 6052/8215)
+_EMBEDDED_V4_NETS = tuple(ipaddress.ip_network(n) for n in ("::/96", "64:ff9b::/96", "64:ff9b:1::/48"))
+DNS_TIMEOUT = 3.0
 
 
 def is_windows() -> bool:
@@ -418,6 +423,23 @@ def _close_processes(pids: list[int], process_name: str, grace: float = CLOSE_GR
     return bool(alive)
 
 
+def _resolve_host(host: str, timeout: float = DNS_TIMEOUT) -> list[str]:
+    """IP-Adressen eines Hostnamens (getaddrinfo wie beim Browser). Leer = nicht auflösbar/zu langsam."""
+    found: list[str] = []
+
+    def work() -> None:
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except (OSError, UnicodeError):
+            return
+        found.extend(str(info[4][0]) for info in infos)
+
+    thread = threading.Thread(target=work, name="jarvis-dns", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return [] if thread.is_alive() else list(found)
+
+
 def _open_in_browser(url: str) -> None:
     """Geprüfte http(s)-Adresse im Standardbrowser öffnen (ShellExecute über os.startfile)."""
     _refuse_unless_windows("Webseiten öffnen")
@@ -456,6 +478,22 @@ def _domain_allowed(host: str, allowed: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in allowed)
 
 
+def ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True nur für öffentliche Adressen – auch in IPv6 verpackte IPv4-Adressen werden geprüft."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.scope_id:
+            return False
+        inner = ip.ipv4_mapped or ip.sixtofour
+        if inner is None and any(ip in net for net in _EMBEDDED_V4_NETS):
+            inner = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if inner is not None and not inner.is_global:
+            return False
+    return ip.is_global
+
+
+LOCAL_TARGET = "Lokale oder private Adressen öffne ich nicht (Schutz der Geräte im Heimnetz)."
+
+
 def _quote_non_ascii(text: str) -> str:
     return "".join(c if ord(c) < 128 else "".join(f"%{b:02X}" for b in c.encode("utf-8")) for c in text)
 
@@ -490,8 +528,8 @@ def validate_url(url: str, cfg: DesktopConfig) -> tuple[str, str]:
     except ValueError:
         ip = None
     if ip is not None:
-        if not ip.is_global:
-            raise ToolError("Lokale oder private Adressen öffne ich nicht (Schutz der Geräte im Heimnetz).")
+        if not ip_is_public(ip):
+            raise ToolError(LOCAL_TARGET)
         if cfg.allowed_domains:
             raise ToolError("Diese Adresse ist nicht freigegeben (desktop.allowed_domains enthält nur Domains).")
         host = raw_host
@@ -503,7 +541,7 @@ def validate_url(url: str, cfg: DesktopConfig) -> tuple[str, str]:
             raise ToolError(f"'{raw_host}' ist kein gültiger Domainname.") from None
         labels = host.split(".")
         if _ENDS_IN_NUMBER.match(labels[-1]):
-            raise ToolError("Lokale oder private Adressen öffne ich nicht (Schutz der Geräte im Heimnetz).")
+            raise ToolError(LOCAL_TARGET)
         explicitly_allowed = _domain_allowed(host, cfg.allowed_domains)
         if cfg.allowed_domains and not explicitly_allowed:
             allowed = ", ".join(cfg.allowed_domains)
@@ -668,10 +706,36 @@ def desktop_lock(ctx: ToolContext, _p) -> dict:
     return {"status": "locked", "message": "PC gesperrt."}
 
 
+def check_resolved_host(host: str, cfg: DesktopConfig) -> None:
+    """Ein Domainname darf nicht auf eine Adresse im Heimnetz/auf diesen PC zeigen (z. B. 192.168.1.50.nip.io).
+
+    Domains aus desktop.allowed_domains sind ausdrücklich freigegeben (z. B. fritz.box). Ist der Name nicht
+    auflösbar, kann der Browser ihn auch nicht öffnen – dann bleibt es bei der Fehlerseite des Browsers.
+    """
+    try:
+        ipaddress.ip_address(host)
+        return  # IP-Adressen hat validate_url schon geprüft
+    except ValueError:
+        pass
+    if _domain_allowed(host, cfg.allowed_domains):
+        return
+    for raw in _resolve_host(host):
+        try:
+            ip = ipaddress.ip_address(raw.split("%", 1)[0])
+        except ValueError:
+            continue
+        if not ip_is_public(ip):
+            raise ToolError(
+                f"{host} zeigt auf eine Adresse im Heimnetz oder auf diesen PC – solche Adressen öffne ich nur, "
+                "wenn sie in desktop.allowed_domains stehen."
+            )
+
+
 def desktop_open_url(ctx: ToolContext, p: UrlParams) -> dict:
     cfg = _require_enabled(ctx)
     url, host = validate_url(p.url, cfg)
     _refuse_unless_windows("Webseiten öffnen")
+    check_resolved_host(host, cfg)
     _open_in_browser(url)
     return {"status": "opened", "url": url, "host": host, "message": f"{host} im Browser geöffnet."}
 

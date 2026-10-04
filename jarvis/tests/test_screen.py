@@ -350,3 +350,16 @@ async def test_slow_screen_description_extends_chat_deadline(factory, grab):
                       {"llm": {"model": CHAT_MODEL, "timeout": 0.4}, "vision": {"model": "test-vision:3b", "timeout": 5}})
     assert body["source"] == "llm" and body["reply"] == "Fertig."
     assert len(ollama.vision_requests) == 1 and grab == [1]
+
+
+async def test_describe_uses_ollama_client_not_device_client(factory, grab):
+    """main.py reicht den Ollama-Client als extras["llm_http"] durch – Geräte-Client bleibt unberührt."""
+    ollama = FakeOllama()
+    factory.llm_handler = ollama
+    factory.device_handler = lambda r: pytest.fail(f"Geräte-Client für Ollama benutzt: {r.url}")
+    app, token = factory(VISION)
+    assert app.state.registry.ctx.extras["llm_http"] is app.state.agent.http
+    async with client_for(app, token=token) as c:
+        r = await c.post("/api/tools/screen_describe", json={})
+    assert r.status_code == 200, r.text
+    assert len(ollama.vision_requests) == 1 and factory.device_requests == []

@@ -1257,3 +1257,19 @@ def test_wizard_never_downloads_or_starts_programs(tmp_path, monkeypatch):
     code, scripted, _ = run_wizard(tmp_path, answers, is_file=lambda p: p == SPOTIFY, env=WIN_ENV)
     assert code == 0, scripted.text
     assert read_config(tmp_path / "config.yaml")["voice"]["stt"]["enabled"] is True
+
+
+def test_readme_references_in_wizard_match_headings():
+    """Hinweise des Assistenten auf die README ("Abschnitt 12 '…'", "Sicherheit", "Modell auswählen") stimmen."""
+    readme = (PROJECT_DIR / "README.md").read_text(encoding="utf-8")
+    numbered = dict(re.findall(r"(?m)^## (\d+)\. (.+)$", readme))
+    plain = set(re.findall(r"(?m)^## (?:\d+\. )?(.+)$", readme))
+    source = Path(sw.__file__).read_text(encoding="utf-8")
+    refs = re.findall(r"Abschnitt (\d+) '([^']+)'", source)
+    assert refs, "Assistent verweist auf nummerierte README-Abschnitte"
+    for number, name in refs:
+        assert numbered.get(number, "").startswith(name), (number, name, numbered.get(number))
+    names = re.findall(r'README \(?\\"([^"\\]+)\\"', source)
+    assert set(names) >= {"Sicherheit", "Modell auswählen"}, names
+    for name in names:
+        assert any(h == name or h.startswith(name) for h in plain), name
