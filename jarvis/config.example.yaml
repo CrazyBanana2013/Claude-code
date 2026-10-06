@@ -1,0 +1,131 @@
+# JARVIS – Beispielkonfiguration
+# Kopiere diese Datei nach config.yaml (wird nicht versioniert) und ersetze alle TODO-Werte.
+# Werte, die mit "TODO" beginnen, gelten als "noch nicht eingerichtet": Der Server startet
+# trotzdem, das betroffene Tool meldet dann eine verständliche Fehlermeldung.
+
+server:
+  bind: "0.0.0.0"          # 0.0.0.0 = LAN + Tailscale (IPv4). Niemals per Router freigeben!
+  port: 8765
+  # Nur Anfragen aus diesen Netzen werden angenommen, alles andere bekommt 403.
+  allowed_networks:
+    - "127.0.0.0/8"
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "100.64.0.0/10"      # Tailscale (CGNAT-Bereich)
+
+llm:
+  enabled: true
+  force_fallback: false    # true = nie Ollama fragen, nur den Regel-Parser nutzen
+  base_url: "http://127.0.0.1:11434"
+  # Kleinstes installiertes Modell mit Tool-Support, siehe README ("Modell auswählen").
+  model: "TODO_MODELLNAME"
+  keep_alive: "2m"         # danach gibt Ollama den VRAM wieder frei
+  timeout: 60              # Sekunden für die gesamte Chat-Anfrage
+  temperature: 0.2
+  max_tool_rounds: 4
+  think: null              # bei Thinking-Modellen (z. B. qwen3) auf false setzen = schneller
+
+wled:
+  base_url: "http://TODO-WLED-IP"   # z. B. http://<IP des WLED-ESP32>
+  timeout: 3
+
+sensors:
+  - name: "Temperatur"
+    type: esphome_rest
+    base_url: "http://TODO-ESPHOME-IP"
+    # Name der Entität genau wie in der ESPHome-YAML (neuere ESPHome-Versionen);
+    # ältere Firmware nutzt die object_id (z. B. bme280_temperature) – wird automatisch probiert.
+    entity_id: "TODO_ENTITAET_TEMPERATUR"
+    unit: "°C"
+  - name: "Luftfeuchte"
+    type: esphome_rest
+    base_url: "http://TODO-ESPHOME-IP"
+    entity_id: "TODO_ENTITAET_LUFTFEUCHTE"
+    unit: "%"
+
+scripts:
+  - id: cs2
+    label: "CS2-Skript"
+    cwd: "TODO_ORDNER_DES_CS2_SKRIPTS"
+    # Argumentliste, KEIN Shell-String. Beispiele:
+    #   ["C:\\Pfad\\python.exe", "skript.py"]
+    #   ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "skript.ps1"]
+    command: ["TODO_PROGRAMM", "TODO_ARGUMENT"]
+    single_instance: true
+    hide_window: false     # true = ohne Konsolenfenster starten (nur Windows)
+
+# PC-Steuerung: nur diese festen Aktionen (Lautstärke, Medientasten, PC sperren, Webseite öffnen,
+# Programme aus der Liste unten starten/schließen/nach vorne holen). Es gibt bewusst KEINE freie
+# Maus-/Tastatursteuerung, kein Tippen von Text und keine Befehlszeile (siehe README "Sicherheit").
+desktop:
+  enabled: true
+  allow_open_url: true     # Webseiten im Standardbrowser öffnen (nur http/https)
+  # Leer = alle öffentlichen Domains. Sonst NUR diese Domains und ihre Subdomains, z. B. ["youtube.com",
+  # "wikipedia.org"] – wer hier "fritz.box" einträgt, sperrt damit alle anderen Webseiten.
+  allowed_domains: []
+  # Feste Programmliste – das LLM kann nur diese IDs benutzen. command = Argumentliste (kein
+  # Shell-String), process_name = Dateiname des laufenden Prozesses (zum Erkennen und Schließen),
+  # window_title = Teil des Fenstertitels (für "nach vorne holen").
+  apps:
+    - id: editor
+      label: "Editor"
+      command: ["notepad.exe"]
+      process_name: "notepad.exe"
+      window_title: "Editor"
+    - id: rechner
+      label: "Rechner"
+      command: ["calc.exe"]
+      process_name: "CalculatorApp.exe"
+      window_title: "Rechner"
+    # Weitere Beispiele (Pfade sind Platzhalter – anpassen und die Raute entfernen):
+    # - id: spotify
+    #   label: "Spotify"
+    #   command: ["TODO_PFAD\\Spotify.exe"]
+    #   process_name: "Spotify.exe"
+    #   window_title: "Spotify"
+    # - id: discord
+    #   label: "Discord"
+    #   command: ["TODO_PFAD\\Discord\\Update.exe", "--processStart", "Discord.exe"]
+    #   process_name: "Discord.exe"
+    #   window_title: "Discord"
+    # - id: steam
+    #   label: "Steam"
+    #   command: ["TODO_PFAD\\Steam\\steam.exe"]
+    #   process_name: "steam.exe"
+    #   window_title: "Steam"
+    # - id: browser
+    #   label: "Browser"
+    #   command: ["TODO_PFAD\\firefox.exe"]
+    #   process_name: "firefox.exe"
+    #   window_title: "Firefox"
+
+# "Bildschirm beschreiben": Ein Bildschirmfoto geht NUR an das lokale Ollama (llm.base_url muss
+# 127.0.0.1/localhost sein), wird nicht gespeichert und nie ans Handy geschickt.
+vision:
+  # Ollama-Modell mit capability "vision" (ollama show <name>); darf gleich llm.model sein –
+  # ein eigenes Modell braucht zusätzlich VRAM.
+  model: "TODO_VISIONMODELL"
+  max_side: 1568           # längste Bildseite in Pixeln (wird verkleinert)
+  jpeg_quality: 80
+  monitor: 1               # 1 = Hauptbildschirm, 2 = zweiter ..., 0 = alle zusammen
+  timeout: 90              # Sekunden für die Beschreibung
+
+voice:
+  # Sprachausgabe über die PC-Lautsprecher (Windows-Sprachausgabe, offline)
+  tts:
+    enabled: true
+    speak_replies: true    # Antworten im Chat vorlesen (in der Oberfläche umschaltbar)
+    voice: ""              # "" = erste installierte deutsche Stimme
+    rate: 0                # -10 (langsam) bis 10 (schnell)
+    volume: 100            # 0 bis 100
+  # Spracherkennung (Mikrofon-Button) lokal mit Whisper – braucht das Extra "voice"
+  # und lädt das Modell einmalig herunter (Modell "small" etwa 500 MB).
+  stt:
+    enabled: false
+    model: "small"
+    device: "cpu"
+    compute_type: "int8"
+    language: "de"
+    max_seconds: 30        # längste Aufnahme in Sekunden
+    download_root: ""      # "" = state\whisper

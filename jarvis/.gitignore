@@ -1,0 +1,22 @@
+# Lokale Konfiguration und Geheimnisse – niemals committen
+config.yaml
+secrets.yaml
+state/
+# Sicherung und Zwischendateien des Einrichtungsassistenten (python -m app.setup_wizard)
+config.yaml.bak
+.config.yaml.*.tmp
+
+# Release-Pakete (python scripts/build_installer.py)
+dist/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editoren / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

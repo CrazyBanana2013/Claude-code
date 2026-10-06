@@ -1,0 +1,3163 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#02070d">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>JARVIS</title>
+<style>
+  :root {
+    --bg: #02070d;
+    --cy: #3be3ff;
+    --cy-rgb: 59, 227, 255;
+    --cy-2: #9af5ff;
+    --line: rgba(59, 227, 255, .24);
+    --line-2: rgba(59, 227, 255, .5);
+    --text: #d8f6ff;
+    --muted: #8aafbf;
+    --ok: #41e39b;
+    --warn: #ffc457;
+    --bad: #ff5d6c;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", "DejaVu Sans Mono", monospace;
+    --hud: "Bahnschrift", "DIN Alternate", "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --sat: env(safe-area-inset-top, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sheet-top: 26vh;
+    --dockw: 420px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #02070d; color: var(--text); }
+  body {
+    font: 15px/1.45 var(--ui);
+    -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;
+    touch-action: manipulation; overscroll-behavior: none;
+  }
+  button { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+  /* Liest die Safe-Area-Ränder für das JS-Layout (Notch im Querformat) */
+  #safe-probe { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; pointer-events: none; padding: var(--sat) var(--sar) var(--sab) var(--sal); }
+
+  /* ---------- Kopfleiste ---------- */
+  .bar {
+    position: fixed; z-index: 4; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px;
+    padding: calc(var(--sat) + 10px) calc(var(--sar) + 14px) 10px calc(var(--sal) + 16px);
+    background: linear-gradient(180deg, rgba(2, 7, 13, .95) 45%, rgba(2, 7, 13, 0));
+    pointer-events: none;
+  }
+  .brand { display: flex; flex-direction: column; line-height: 1; flex: none; }
+  .brand b { font: 700 15px/1 var(--hud); letter-spacing: .38em; color: var(--cy); text-shadow: 0 0 10px rgba(var(--cy-rgb), .65); }
+  .brand small { font: 500 8.5px/1 var(--mono); letter-spacing: .2em; color: var(--muted); margin-top: 5px; }
+  .status {
+    margin-left: auto; display: flex; gap: 6px; min-width: 0; min-height: 44px; align-items: center; padding: 0; border: 0; background: none;
+    pointer-events: auto; cursor: pointer; border-radius: 3px;
+  }
+  .pill {
+    display: inline-block; min-width: 0; max-width: 50vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font: 600 10.5px/1 var(--hud); letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    padding: 8px 9px 7px; border: 1px solid var(--line); background: rgba(3, 16, 26, .82); border-radius: 2px;
+  }
+  .pill::before {
+    content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0; border-radius: 50%;
+    background: var(--muted); vertical-align: middle;
+  }
+  .pill.ok { color: var(--text); }
+  .pill.ok::before { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .pill.warn { color: #ffe2a8; }
+  .pill.warn::before { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .pill.bad { color: #ffc6cc; border-color: rgba(255, 93, 108, .5); }
+  .pill.bad::before { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
+  .status:hover .pill { border-color: var(--line-2); }
+
+  /* ---------- Befehlsleiste (Daumenzone) ---------- */
+  /* Rahmen = Lage der Leiste; #cmd füllt ihn ganz aus (das HUD-Layout misst #cmd), das Mikrofon liegt rechts darüber */
+  .cmdbar {
+    --micw: 52px;
+    position: fixed; z-index: 5; left: calc(var(--sal) + 12px); right: calc(var(--sar) + 12px); bottom: calc(var(--sab) + 10px);
+    height: 52px; transition: right .45s cubic-bezier(.2, .8, .2, 1), opacity .5s;
+  }
+  .cmd {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+    display: flex; align-items: center; gap: 10px; padding: 0 calc(var(--micw) + 10px) 0 14px; cursor: pointer; text-align: left;
+    border: 1px solid rgba(var(--cy-rgb), .42); border-radius: 3px; color: var(--text);
+    background: linear-gradient(180deg, rgba(6, 30, 45, .94), rgba(2, 12, 20, .96));
+    box-shadow: 0 0 22px rgba(var(--cy-rgb), .12), inset 0 1px 0 rgba(var(--cy-rgb), .25);
+  }
+  .mic {
+    position: absolute; z-index: 1; top: 0; right: 0; bottom: 0; width: var(--micw); margin: 0; padding: 0; cursor: pointer;
+    display: grid; place-items: center; color: var(--cy); background: transparent; border: 0; border-left: 1px solid var(--line); border-radius: 0 3px 3px 0;
+  }
+  .mic:hover { background: rgba(var(--cy-rgb), .12); }
+  .mic:focus-visible { outline: 2px solid var(--cy); outline-offset: -3px; }
+  /* Mikrofon-Symbol (Leiste und Befehl-Panel): Schrägstrich = hier nicht verfügbar, rot pulsierend = Aufnahme läuft */
+  .micico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px rgba(var(--cy-rgb), .7)); overflow: visible; }
+  button.b.icon svg.micico { width: 20px; height: 20px; }
+  .micico .sl { display: none; stroke: var(--warn); }
+  [data-mic].na { color: var(--muted); }
+  [data-mic].na .micico { filter: none; }
+  [data-mic].na .micico .sl { display: inline; }
+  [data-mic].rec { color: #ffd0d5; background: rgba(255, 93, 108, .2); }
+  button.b[data-mic].rec { border-color: var(--bad); box-shadow: 0 0 14px rgba(255, 93, 108, .45); }
+  [data-mic].rec .micico { filter: drop-shadow(0 0 5px rgba(255, 93, 108, .9)); }
+  button.b[data-mic] { position: relative; }
+  [data-mic].rec::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+    border: 2px solid var(--bad); pointer-events: none; animation: micpulse 1.2s ease-out infinite;
+  }
+  @keyframes micpulse { from { transform: scale(.7); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
+  /* „Verwerfen“ während der Aufnahme (Touch-Ersatz für Esc) – in der Leiste links neben dem Mikrofon */
+  .rec-x {
+    position: absolute; z-index: 1; top: 0; bottom: 0; right: var(--micw); margin: 0; padding: 0 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px; color: #ffd0d5; background: rgba(40, 6, 12, .92); border: 0;
+    border-left: 1px solid rgba(255, 93, 108, .45); font: 600 12px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+  }
+  .rec-x svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+  .rec-x:focus-visible { outline: 2px solid var(--bad); outline-offset: -3px; }
+  .rec-x[hidden], button.b.rec-cancel[hidden] { display: none; }
+  .cmd::before {
+    content: ""; position: absolute; inset: 3px; pointer-events: none; --b: rgba(var(--cy-rgb), .9);
+    background:
+      linear-gradient(var(--b), var(--b)) left top / 10px 1.5px, linear-gradient(var(--b), var(--b)) left top / 1.5px 10px,
+      linear-gradient(var(--b), var(--b)) right bottom / 10px 1.5px, linear-gradient(var(--b), var(--b)) right bottom / 1.5px 10px;
+    background-repeat: no-repeat;
+  }
+  .cmd:hover { border-color: var(--cy); box-shadow: 0 0 22px rgba(var(--cy-rgb), .25); }
+  .cmd-code { flex: none; font: 600 10px/1 var(--mono); letter-spacing: .14em; color: var(--muted); padding-right: 10px; border-right: 1px solid var(--line); }
+  .cmd-line { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font: 500 14px/1.2 var(--mono); }
+  .cmd-line .prompt { color: var(--cy); font-weight: 700; }
+  .cmd-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmd-text.hint { color: #a9c9d6; }
+  .cmd-text.live { color: #ffd0d5; }
+  .caret { flex: none; width: 7px; height: 15px; background: var(--cy); box-shadow: 0 0 6px var(--cy); animation: blink 1.1s steps(2, start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
+  .cmd-src { flex: none; font: 600 10px/1 var(--mono); letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+  .cmd:focus-visible { outline: 2px solid var(--cy); outline-offset: 2px; }
+
+  /* ---------- Bühne: Kern + Knoten ---------- */
+  #rig { position: fixed; inset: 0; z-index: 2; pointer-events: none; }
+  #rig > button { pointer-events: auto; }
+  .node {
+    position: absolute; left: 0; top: 0; width: 112px; height: 142px; margin: 0; padding: 0; border: 0; background: none;
+    display: flex; flex-direction: column; align-items: center; cursor: pointer; outline: none;
+    opacity: 0; transition: opacity .6s ease; will-change: transform; color: var(--text); --ring: 80px;
+  }
+  .node.k-up { flex-direction: column-reverse; }
+  .node.k-hl, .node.k-hr { width: 184px; height: 72px; flex-direction: row; gap: 8px; padding: 0 4px; --ring: 64px; }
+  .node.k-hl { flex-direction: row-reverse; }
+  .ready .node { opacity: 1; }
+  .ring { position: relative; width: var(--ring); height: var(--ring); flex: none; display: grid; place-items: center; transition: transform .12s; }
+  .ring svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .ring .spin { animation: spin 18s linear infinite; }
+  .node:nth-of-type(odd) .ring .spin { animation-direction: reverse; animation-duration: 23s; }
+  .spin .dash { fill: none; stroke: rgba(var(--cy-rgb), .5); stroke-width: 1; stroke-dasharray: 1.5 5; }
+  .spin .arc { fill: none; stroke: var(--cy); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 30 265; }
+  .spin .arc2 { fill: none; stroke: rgba(var(--cy-rgb), .7); stroke-width: 2; stroke-dasharray: 10 285; stroke-dashoffset: -150; }
+  .hex .o { fill: rgba(3, 20, 32, .9); stroke: var(--cy); stroke-width: 1.3; transition: fill .15s, stroke-width .15s; }
+  .hex .i { fill: none; stroke: rgba(var(--cy-rgb), .28); stroke-width: 1; }
+  .ring .ico {
+    position: relative; width: 35%; height: 35%; fill: none; stroke: var(--cy-2); stroke-width: 1.6;
+    stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 4px rgba(var(--cy-rgb), .85));
+  }
+  .ring .led {
+    position: absolute; right: 14%; top: 14%; width: 9px; height: 9px; border-radius: 50%;
+    background: #2c4653; box-shadow: 0 0 0 2px #02101a;
+  }
+  .node[data-state="on"] .led { background: var(--led, var(--ok)); box-shadow: 0 0 0 2px #02101a, 0 0 9px var(--led, var(--ok)); }
+  .node[data-state="warn"] .led { background: var(--warn); box-shadow: 0 0 0 2px #02101a, 0 0 8px var(--warn); }
+  .node[data-state="bad"] .led { background: var(--bad); box-shadow: 0 0 0 2px #02101a, 0 0 8px var(--bad); }
+  /* Beschriftung mit dunklem Hof, damit Partikel dahinter den Kontrast nicht senken */
+  .lab {
+    height: 62px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-top: 3px;
+    background: radial-gradient(closest-side, rgba(2, 7, 13, .78), rgba(2, 7, 13, .5) 70%, rgba(2, 7, 13, 0));
+  }
+  .node.k-up .lab { justify-content: flex-end; padding: 0 0 3px; }
+  .node.k-hl .lab, .node.k-hr .lab { height: auto; flex: 1; min-width: 0; align-items: flex-start; padding: 0; background: radial-gradient(closest-side, rgba(2, 7, 13, .7), rgba(2, 7, 13, 0)); }
+  .node.k-hl .lab { align-items: flex-end; }
+  .node .t {
+    padding-left: .24em; font: 700 11.5px/1 var(--hud); letter-spacing: .24em; text-transform: uppercase;
+    color: var(--cy); text-shadow: 0 0 8px rgba(var(--cy-rgb), .6), 0 0 2px #02070d;
+  }
+  /* Wert und Unterzeile dürfen etwas breiter als der Knoten sein (mittig), damit z. B. „AUS IN 15 s“ oder „nicht eingerichtet“ nie abgeschnitten werden */
+  .node .v {
+    margin-top: 4px; padding: 3px 6px 2px; font: 700 15px/1.2 var(--mono); white-space: nowrap; color: #effcff;
+    background: rgba(2, 12, 20, .9); border: 1px solid var(--line-2); border-radius: 2px; max-width: 124px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node .s { margin-top: 3px; min-height: 12px; font: 500 10.5px/1.15 var(--mono); letter-spacing: .03em; color: var(--muted); white-space: nowrap; max-width: 124px; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 3px #02070d; }
+  .node.k-hl .v, .node.k-hr .v, .node.k-hl .s, .node.k-hr .s { max-width: 104px; }
+  /* Handy quer: Beschriftung neben dem Ring ist schmal → Wert kleiner, Unterzeile bricht an Wortgrenzen um (max. 2 Zeilen) */
+  .node.k-hl .v, .node.k-hr .v { padding: 3px 5px 2px; font-size: 13.5px; }
+  .node.k-hl .s, .node.k-hr .s { white-space: normal; text-wrap: balance; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .node.k-hl .s { text-align: right; }
+  .node.k-hr .s { text-align: left; }
+  .node:hover .hex .o, .node:focus-visible .hex .o { fill: rgba(10, 52, 74, .94); }
+  button.node:focus-visible { outline: none; }
+  .node:focus-visible .ring::after {
+    content: ""; position: absolute; inset: -7px; border-radius: 50%; border: 2px solid var(--cy);
+    box-shadow: 0 0 14px rgba(var(--cy-rgb), .8);
+  }
+  .node[aria-expanded="true"] .hex .o { stroke-width: 2.4; fill: rgba(12, 72, 98, .94); }
+  .node:active .ring { transform: scale(.94); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Server offline: Knoten-Ringe und Titel wechseln mit dem HUD auf Rot */
+  body.alert .hex .o { stroke: var(--bad); }
+  body.alert .spin .arc, body.alert .spin .arc2 { stroke: var(--bad); }
+  body.alert .ring .ico { stroke: #ffb3bb; filter: drop-shadow(0 0 4px rgba(255, 93, 108, .85)); }
+  body.alert .node .t, body.alert .brand b { color: #ff8a96; text-shadow: 0 0 8px rgba(255, 93, 108, .6), 0 0 2px #02070d; }
+  #core {
+    position: absolute; left: 0; top: 0; width: 120px; height: 120px; margin: 0; padding: 0; border: 0; border-radius: 50%;
+    background: transparent; cursor: pointer; opacity: 0; transition: opacity .9s; outline: none;
+  }
+  .ready #core { opacity: 1; }
+  #core:focus-visible { box-shadow: 0 0 0 2px var(--cy), 0 0 22px rgba(var(--cy-rgb), .7); }
+
+  /* ---------- Panels ---------- */
+  .panel {
+    position: fixed; z-index: 30; display: flex; flex-direction: column;
+    background:
+      repeating-linear-gradient(0deg, rgba(var(--cy-rgb), .025) 0 1px, transparent 1px 3px),
+      linear-gradient(180deg, rgba(7, 31, 47, .975), rgba(2, 11, 19, .985) 60%);
+    box-shadow: 0 -14px 40px rgba(0, 0, 0, .6), 0 -2px 26px rgba(var(--cy-rgb), .16);
+    overflow: hidden;
+  }
+  .panel::before {
+    content: ""; position: absolute; inset: 6px 6px calc(var(--pad-b, 0px) + 6px); pointer-events: none; z-index: 2;
+    --b: rgba(var(--cy-rgb), .85);
+    background:
+      linear-gradient(var(--b), var(--b)) left top / 16px 1.5px, linear-gradient(var(--b), var(--b)) left top / 1.5px 16px,
+      linear-gradient(var(--b), var(--b)) right top / 16px 1.5px, linear-gradient(var(--b), var(--b)) right top / 1.5px 16px,
+      linear-gradient(var(--b), var(--b)) left bottom / 16px 1.5px, linear-gradient(var(--b), var(--b)) left bottom / 1.5px 16px,
+      linear-gradient(var(--b), var(--b)) right bottom / 16px 1.5px, linear-gradient(var(--b), var(--b)) right bottom / 1.5px 16px;
+    background-repeat: no-repeat;
+  }
+  .panel::after {
+    content: ""; position: absolute; left: 50%; top: 0; width: 120px; height: 3px; transform: translateX(-50%); z-index: 2;
+    background: var(--cy); box-shadow: 0 0 12px var(--cy); clip-path: polygon(0 0, 100% 0, calc(100% - 3px) 100%, 3px 100%);
+  }
+  /* Panel blendet gerade aus: Tipps gehen schon durch (sonst verschluckt das abgleitende Sheet den nächsten Knoten-Tipp) */
+  .panel:not(.open) { pointer-events: none; }
+  .panel .scan {
+    position: absolute; left: 0; right: 0; top: 0; height: 2px; z-index: 3; pointer-events: none; opacity: 0;
+    background: linear-gradient(90deg, transparent, rgba(220, 252, 255, .9), transparent); box-shadow: 0 0 14px rgba(var(--cy-rgb), .9);
+  }
+  .panel.open .scan { animation: scan .65s ease-out .05s; }
+  @keyframes scan { 0% { top: 0; opacity: .95; } 100% { top: 100%; opacity: 0; } }
+  .panel.open::after { animation: edge .32s ease-out; }
+  @keyframes edge { from { width: 0; opacity: .3; } to { width: 120px; opacity: 1; } }
+
+  /* Handy hochkant: Bottom-Sheet, Oberkante unter der oberen Knotenreihe, Größe nach Inhalt */
+  body.m-sheet .panel {
+    left: 0; right: 0; bottom: 0; margin: 0 auto; max-width: 560px; --pad-b: var(--sab);
+    max-height: 74vh; max-height: max(46dvh, calc(100dvh - var(--sheet-top)));
+    border-top: 1px solid rgba(var(--cy-rgb), .6); padding-bottom: var(--sab);
+    transform: translateY(105%); transition: transform .3s cubic-bezier(.2, .8, .2, 1);
+  }
+  body.m-sheet .panel.open { transform: none; }
+  body.m-sheet .panel.chat { height: 74vh; height: max(min(82dvh, calc(100dvh - var(--sheet-top))), min(100dvh, 330px)); max-height: 100vh; max-height: 100dvh; }
+  /* Desktop: Seitenpanel rechts, Bühne weicht nach links aus; Handy quer: Panel zwischen den Knotenspalten */
+  body.m-dock .panel, body.m-center .panel {
+    border: 1px solid rgba(var(--cy-rgb), .42);
+    box-shadow: 0 0 40px rgba(var(--cy-rgb), .14), 0 20px 60px rgba(0, 0, 0, .6);
+    opacity: 0; clip-path: inset(50% 0 50% 0); transition: clip-path .3s cubic-bezier(.2, .8, .2, 1), opacity .18s;
+  }
+  body.m-dock .panel.open, body.m-center .panel.open { opacity: 1; clip-path: inset(0 0 0 0); }
+  body.m-dock .panel { right: calc(var(--sar) + 24px); top: calc(var(--sat) + 72px); width: var(--dockw); max-height: calc(100vh - var(--sat) - 96px); }
+  body.m-dock .panel.chat { height: calc(100vh - var(--sat) - 96px); }
+  body.m-center .panel { left: var(--pl, 20%); width: var(--pw, 60%); top: var(--pt, 52px); max-height: var(--ph, 80vh); }
+  body.m-center .panel.chat { height: var(--ph, 80vh); }
+  body.m-dock .cmdbar { right: max(calc(var(--sar) + 12px), calc((100% - 760px) / 2)); left: max(calc(var(--sal) + 12px), calc((100% - 760px) / 2)); }
+  body.panel-open.m-center .cmdbar, body.panel-open.m-sheet .cmdbar { opacity: 0; pointer-events: none; }
+  body.panel-open.m-dock .cmdbar { right: calc(var(--sar) + var(--dockw) + 48px); left: max(calc(var(--sal) + 12px), calc((100% - var(--dockw) - 44px - 760px) / 2)); }
+
+  .p-head {
+    position: relative; flex: none; display: flex; align-items: flex-start; gap: 10px;
+    padding: 16px 14px 11px 20px; border-bottom: 1px solid var(--line);
+  }
+  .p-head::after {
+    content: ""; position: absolute; left: 20px; bottom: -1px; width: 38%; height: 1px;
+    background: linear-gradient(90deg, var(--cy), transparent); box-shadow: 0 0 6px var(--cy);
+  }
+  .p-tt { flex: 1; min-width: 0; }
+  .p-code { font: 500 9.5px/1 var(--mono); letter-spacing: .2em; color: var(--muted); text-transform: uppercase; }
+  .p-head h2 {
+    margin: 7px 0 0; font: 700 19px/1 var(--hud); letter-spacing: .3em; text-transform: uppercase;
+    color: var(--cy); text-shadow: 0 0 12px rgba(var(--cy-rgb), .55);
+  }
+  .p-state {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+    margin-top: 7px; font: 500 12.5px/1.35 var(--mono); color: var(--text); opacity: .9; overflow-wrap: anywhere;
+  }
+  .p-state:empty { display: none; }
+  .x {
+    flex: none; width: 44px; height: 44px; margin: -4px 0 0; padding: 0; display: grid; place-items: center; cursor: pointer;
+    background: rgba(var(--cy-rgb), .06); border: 1px solid var(--line-2); border-radius: 3px; color: var(--cy);
+  }
+  .x svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; }
+  .x:hover { background: rgba(var(--cy-rgb), .18); box-shadow: 0 0 12px rgba(var(--cy-rgb), .3); }
+  .p-body { padding: 16px 16px 20px 20px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .p-body.chatb { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 12px; }
+  .sec + .sec { margin-top: 18px; }
+  .lbl {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 9px; font: 700 10px/1 var(--hud); letter-spacing: .22em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .lbl::before { content: ""; width: 10px; height: 1px; background: var(--cy); box-shadow: 0 0 4px var(--cy); }
+  .lbl .r { margin-left: auto; font: 600 12px/1 var(--mono); letter-spacing: .04em; color: var(--cy); text-transform: none; }
+  .label { font-size: 13px; color: var(--muted); }
+  .note { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+
+  button.b {
+    min-height: 44px; padding: 0 14px; cursor: pointer; border-radius: 3px;
+    font: 700 13px/1 var(--hud); letter-spacing: .14em; text-transform: uppercase; color: var(--text);
+    background: linear-gradient(180deg, rgba(var(--cy-rgb), .13), rgba(var(--cy-rgb), .03));
+    border: 1px solid rgba(var(--cy-rgb), .42); transition: background .15s, box-shadow .15s, border-color .15s, transform .05s;
+  }
+  button.b:hover { background: rgba(var(--cy-rgb), .2); box-shadow: 0 0 12px rgba(var(--cy-rgb), .28); }
+  button.b:active { transform: scale(.98); }
+  button.b.sel { border-color: var(--cy); background: rgba(var(--cy-rgb), .24); box-shadow: inset 0 0 14px rgba(var(--cy-rgb), .3), 0 0 10px rgba(var(--cy-rgb), .25); color: #fff; }
+  button.b.sel::before { content: "● "; color: var(--cy); }
+  button.b.primary { background: var(--cy); border-color: var(--cy); color: #001018; box-shadow: 0 0 14px rgba(var(--cy-rgb), .45); }
+  button.b.primary:hover { background: #7aefff; }
+  button.b.danger { color: #ffd0d5; border-color: rgba(255, 93, 108, .65); background: linear-gradient(180deg, rgba(255, 93, 108, .2), rgba(255, 93, 108, .05)); }
+  button.b.danger:hover { background: rgba(255, 93, 108, .28); box-shadow: 0 0 14px rgba(255, 93, 108, .35); }
+  button.b.icon { width: 44px; padding: 0; display: grid; place-items: center; flex: none; }
+  button.b.icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  /* Laufende Aktion: Knopf bleibt fokussierbar (aria-busy statt disabled), damit der Fokus nicht verloren geht */
+  [aria-busy="true"] { opacity: .55; cursor: wait !important; }
+  button:focus-visible, .x:focus-visible { outline: 2px solid var(--cy); outline-offset: 2px; }
+  /* Zwei Knöpfe nebeneinander; passt die Beschriftung (z. B. „Herunterfahren“) nicht, stehen sie untereinander */
+  .two { display: flex; flex-wrap: wrap; gap: 8px; }
+  .two > * { flex: 1 1 0; min-width: max-content; }
+  .two > button.b { padding: 0 10px; letter-spacing: .1em; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .grow { flex: 1; min-width: 0; }
+
+  .panel input[type=text], dialog input {
+    width: 100%; min-width: 0; min-height: 44px; padding: 0 12px; border-radius: 3px;
+    font: 16px var(--ui); color: var(--text); background: rgba(1, 8, 14, .9); border: 1px solid var(--line-2);
+  }
+  .panel input[type=text]::placeholder, dialog input::placeholder { color: #5f8796; }
+  #chat-input.live::placeholder { color: #ffb3bb; }   /* Aufnahme läuft: Status als Platzhalter */
+  input:focus { outline: none; border-color: var(--cy); box-shadow: 0 0 0 1px var(--cy), 0 0 14px rgba(var(--cy-rgb), .35); }
+
+  /* Licht */
+  .readout { display: flex; align-items: center; gap: 12px; }
+  .now {
+    width: 34px; height: 34px; border-radius: 50%; flex: none; background: #1b2b33;
+    box-shadow: 0 0 0 2px #02101a, 0 0 0 3px rgba(var(--cy-rgb), .5);
+  }
+  .big { font: 600 34px/1 var(--hud); letter-spacing: .04em; color: var(--cy); text-shadow: 0 0 12px rgba(var(--cy-rgb), .5); font-variant-numeric: tabular-nums; }
+  input[type=range] {
+    --p: 50%; -webkit-appearance: none; appearance: none; width: 100%; height: 44px; margin: 0; background: transparent; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 6px; border-radius: 3px;
+    background: linear-gradient(90deg, var(--cy) var(--p), rgba(var(--cy-rgb), .14) var(--p));
+    box-shadow: 0 0 10px rgba(var(--cy-rgb), .35);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 28px; height: 28px; margin-top: -11px; border-radius: 50%;
+    background: radial-gradient(circle, #e6fdff 0 3px, #02121c 4px); border: 2px solid var(--cy); box-shadow: 0 0 12px var(--cy);
+  }
+  input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: rgba(var(--cy-rgb), .14); }
+  input[type=range]::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--cy); }
+  input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #02121c; border: 2px solid var(--cy); box-shadow: 0 0 12px var(--cy); }
+  input[type=range]:focus-visible { outline: 2px solid var(--cy); outline-offset: 2px; box-shadow: none; }
+  .scale { display: flex; justify-content: space-between; margin-top: -6px; font: 500 9px/1 var(--mono); color: var(--muted); }
+  .swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px 8px; }
+  .swatch {
+    position: relative; justify-self: center; width: 100%; max-width: 52px; aspect-ratio: 1; min-height: 44px; min-width: 44px; padding: 0; cursor: pointer;
+    border: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25), 0 0 0 1px rgba(var(--cy-rgb), .25);
+    transition: box-shadow .15s, transform .05s;
+  }
+  .swatch:hover { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .35), 0 0 0 2px rgba(var(--cy-rgb), .6); }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px #02101a, 0 0 0 4px var(--cy), 0 0 16px var(--cy); }
+  .swatch:active { transform: scale(.94); }
+  /* Eigene Farbe: das ganze Feld ist das (unsichtbare) Farbwahl-Element */
+  .picker { display: block; background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+  .picker input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+  .picker .pk { position: absolute; inset: 6px; border-radius: 50%; background: var(--pick, #3be3ff); box-shadow: inset 0 0 0 2px #02101a; pointer-events: none; }
+  .picker:focus-within { outline: 2px solid var(--cy); outline-offset: 3px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  button.chip {
+    min-height: 44px; padding: 0 12px; cursor: pointer; border-radius: 3px;
+    font: 500 13px/1 var(--mono); color: var(--text); background: rgba(2, 14, 22, .8); border: 1px dashed rgba(var(--cy-rgb), .45);
+  }
+  button.chip:hover { border-style: solid; background: rgba(var(--cy-rgb), .14); }
+  button.chip.sel { border: 1px solid var(--cy); background: rgba(var(--cy-rgb), .2); color: #fff; }
+  .inline { display: flex; gap: 8px; margin-top: 8px; }
+
+  /* Klima */
+  .sensors { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 10px; }
+  .sensor { position: relative; min-width: 0; padding: 10px 10px 12px; border: 1px solid var(--line); background: rgba(var(--cy-rgb), .035); border-radius: 3px; text-align: center; }
+  .sensor .name { font: 700 10px/1.3 var(--hud); letter-spacing: .2em; text-transform: uppercase; color: var(--muted); overflow-wrap: anywhere; }
+  .gauge { display: block; width: 100%; max-width: 150px; margin: 8px auto 0; overflow: visible; }
+  .gauge .gt { stroke: rgba(var(--cy-rgb), .35); stroke-width: 1; fill: none; }
+  .gauge .gtrack { stroke: rgba(var(--cy-rgb), .13); stroke-width: 7; fill: none; }
+  .gauge .gval { stroke: var(--cy); stroke-width: 7; fill: none; filter: drop-shadow(0 0 4px rgba(var(--cy-rgb), .8)); }
+  .sensor .big { margin-top: -14px; font-size: 24px; overflow-wrap: anywhere; }
+  .sensor .big.nog { margin-top: 12px; }
+  .sensor .err { margin-top: 10px; color: var(--warn); font-size: 13px; overflow-wrap: anywhere; }
+  .stand { margin-top: 12px; display: flex; align-items: center; gap: 8px; }
+
+  /* Skripte */
+  .scripts { display: grid; gap: 8px; }
+  .script {
+    display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 12px;
+    border: 1px solid var(--line); border-left: 2px solid rgba(var(--cy-rgb), .6); background: rgba(var(--cy-rgb), .03); border-radius: 3px;
+  }
+  .script .nm { font-weight: 600; overflow-wrap: anywhere; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3a5764; flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.todo { background: var(--warn); }
+
+  /* PC + System */
+  .warnbox {
+    display: flex; gap: 12px; align-items: center; padding: 12px; margin-bottom: 14px;
+    border: 1px solid rgba(255, 93, 108, .35); background: rgba(255, 93, 108, .06); border-radius: 3px; font-size: 14px;
+  }
+  .warnbox svg { width: 30px; height: 30px; flex: none; fill: none; stroke: var(--bad); stroke-width: 1.7; stroke-linecap: round; filter: drop-shadow(0 0 5px rgba(255, 93, 108, .7)); }
+  .vol { display: flex; align-items: center; gap: 10px; }
+  .vol input[type=range] { flex: 1; min-width: 0; }
+  /* Wert noch unbekannt (vor dem ersten Lesen): Regler gedämpft statt einer erfundenen Stellung */
+  input[type=range].unk { opacity: .45; }
+  #vol-mute[aria-pressed="true"] { border-color: var(--warn); color: var(--warn); background: rgba(255, 196, 87, .12); box-shadow: 0 0 10px rgba(255, 196, 87, .25); }
+  #vol-mute .m, #vol-mute[aria-pressed="true"] .w { display: none; }
+  #vol-mute[aria-pressed="true"] .m { display: inline; }
+  .media { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .media button.b.icon { width: 100%; }
+  .media button.b.icon svg { width: 20px; height: 20px; }
+  button.b.wide { width: 100%; }
+  /* Programme: passt der Name nicht neben die Knöpfe (schmale Liste), stehen die Knöpfe darunter */
+  #apps { container-type: inline-size; }
+  .app { flex-wrap: wrap; row-gap: 10px; }
+  .app .grow { flex: 1 1 90px; }
+  .app .acts { flex: none; display: flex; gap: 8px; margin-left: auto; }
+  @container (max-width: 349px) {
+    .app .acts { flex: 1 1 100%; }
+    .app .acts button.b:not(.icon) { flex: 1; }
+  }
+  .warn-t { color: #ffe2a8; }
+  .sec.scr { container-type: inline-size; }
+  @container (max-width: 330px) { #screen-form { flex-wrap: wrap; } #screen-form button { flex: 1 1 100%; } }
+  .desk-note { margin: 0 0 14px; padding: 9px 12px; font-size: 13px; color: #ffe2a8; border: 1px solid rgba(255, 196, 87, .35); border-left: 3px solid var(--warn); background: rgba(255, 196, 87, .06); border-radius: 2px; }
+  .desc {
+    margin-top: 10px; padding: 10px 12px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+    border: 1px solid var(--line); border-left: 2px solid var(--cy); background: rgba(2, 14, 22, .88); border-radius: 3px;
+  }
+  .desc .dm { margin-top: 7px; font: 11px/1.3 var(--mono); color: var(--muted); white-space: normal; }
+  .desc.err { border-color: rgba(255, 93, 108, .5); border-left-color: var(--bad); color: #ffc6cc; }
+  .desc.wait { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+  .desc.wait::after { content: ""; display: inline-block; width: 7px; height: 13px; margin-left: 6px; vertical-align: -2px; background: var(--cy); box-shadow: 0 0 6px var(--cy); animation: blink 1.1s steps(2, start) infinite; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; font-size: 14px; }
+  .kv dt { font: 700 10px/1.9 var(--hud); letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
+
+  /* Chat */
+  .log { flex: 1; min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 10px; overscroll-behavior: contain; }
+  .msg { max-width: 88%; padding: 9px 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 3px; }
+  .msg.me { align-self: flex-end; background: rgba(var(--cy-rgb), .13); border: 1px solid rgba(var(--cy-rgb), .45); }
+  .msg.bot { align-self: flex-start; background: rgba(2, 14, 22, .92); border: 1px solid var(--line); border-left: 2px solid var(--cy); }
+  .msg.bot::before { content: "JARVIS"; display: block; margin-bottom: 5px; font: 700 9px/1 var(--hud); letter-spacing: .3em; color: var(--cy); }
+  .msg.err { border-color: rgba(255, 93, 108, .6); color: #ffc6cc; }
+  .meta { font-size: 11px; color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; font-family: var(--mono); }
+  .tc { border: 1px solid var(--line); border-radius: 2px; padding: 1px 6px; }
+  .tc.ok { border-color: rgba(65, 227, 155, .45); color: var(--ok); }
+  .tc.bad { border-color: rgba(255, 93, 108, .5); color: var(--bad); }
+  /* Transkript: am PC gesprochene Antworten und per Mikrofon erkannte Eingaben */
+  .mk { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid rgba(var(--cy-rgb), .45); border-radius: 2px; color: var(--cy-2); }
+  .mk.sp { border-color: rgba(65, 227, 155, .45); color: var(--ok); }
+  .mk svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .msg.bot.spoken { border-left-color: var(--ok); }
+  .msg.me.voice { border-style: dashed; }
+  .meta.me { justify-content: flex-end; }
+  /* „PC spricht“: Schalter im Kopf des Befehl-Panels (gedrückt = Antworten am PC vorlesen) */
+  button.b.tog {
+    flex: none; display: inline-flex; align-items: center; gap: 7px; margin-top: -4px; padding: 0 11px; letter-spacing: .1em; font-size: 12px;
+    color: var(--muted); background: rgba(2, 14, 22, .7); border-color: var(--line-2);
+  }
+  button.b.tog svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  button.b.tog .on { display: none; }
+  button.b.tog[aria-pressed="true"] { color: #fff; border-color: var(--cy); background: rgba(var(--cy-rgb), .2); box-shadow: inset 0 0 12px rgba(var(--cy-rgb), .25), 0 0 10px rgba(var(--cy-rgb), .2); }
+  button.b.tog[aria-pressed="true"] .on { display: inline; }
+  button.b.tog[aria-pressed="true"] .off { display: none; }
+  button.b.tog.na { color: var(--muted); border-style: dashed; box-shadow: none; background: rgba(2, 14, 22, .7); }
+  .panel.chat .p-head h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* schmale Panels: Schalter nur als Symbol (Beschriftung bleibt als aria-label) */
+  .panel.chat { container-type: inline-size; }
+  @container (max-width: 370px) {
+    button.b.tog .tl { display: none; } button.b.tog { width: 44px; padding: 0; justify-content: center; }
+    form.send button.b.primary { padding: 0 12px; letter-spacing: .06em; }
+  }
+  @media (max-width: 350px) { button.b.tog .tl { display: none; } button.b.tog { width: 44px; padding: 0; justify-content: center; } }
+  .suggest { flex: none; margin: 4px 0 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .suggest button.chip { font-size: 12.5px; padding: 0 10px; }
+  form.send { flex: none; display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+  /* Tastatur offen (Eingabefeld fokussiert): Vorschläge ausblenden, damit das Protokoll Platz behält */
+  @media (max-width: 899px) { .panel.chat:has(#chat-input:focus) .suggest { display: none; } }
+
+  /* ---------- Dialoge ---------- */
+  dialog {
+    color: var(--text); padding: 22px 20px 18px; width: min(400px, calc(100vw - 32px)); border-radius: 3px;
+    background: linear-gradient(180deg, rgba(8, 33, 50, .98), rgba(3, 13, 21, .98));
+    border: 1px solid rgba(var(--cy-rgb), .5); box-shadow: 0 0 50px rgba(var(--cy-rgb), .22);
+  }
+  dialog::backdrop { background: rgba(0, 4, 9, .8); }
+  dialog::before {
+    content: ""; position: absolute; inset: 5px; pointer-events: none; --b: rgba(var(--cy-rgb), .9);
+    background:
+      linear-gradient(var(--b), var(--b)) left top / 14px 1.5px, linear-gradient(var(--b), var(--b)) left top / 1.5px 14px,
+      linear-gradient(var(--b), var(--b)) right top / 14px 1.5px, linear-gradient(var(--b), var(--b)) right top / 1.5px 14px,
+      linear-gradient(var(--b), var(--b)) left bottom / 14px 1.5px, linear-gradient(var(--b), var(--b)) left bottom / 1.5px 14px,
+      linear-gradient(var(--b), var(--b)) right bottom / 14px 1.5px, linear-gradient(var(--b), var(--b)) right bottom / 1.5px 14px;
+    background-repeat: no-repeat;
+  }
+  dialog h3 { margin: 0 0 10px; font: 700 17px/1 var(--hud); letter-spacing: .3em; text-transform: uppercase; color: var(--cy); text-shadow: 0 0 10px rgba(var(--cy-rgb), .5); }
+  dialog code { font-family: var(--mono); color: var(--cy-2); }
+  .d-err { margin: 10px 0 0; padding: 8px 10px; font-size: 13.5px; color: #ffd5da; border: 1px solid rgba(255, 93, 108, .55); border-left: 3px solid var(--bad); background: rgba(255, 93, 108, .08); border-radius: 2px; }
+  dialog.alarm { border-color: rgba(255, 93, 108, .65); box-shadow: 0 0 60px rgba(255, 93, 108, .25); background: linear-gradient(180deg, rgba(48, 10, 18, .98), rgba(14, 4, 8, .98)); }
+  dialog.alarm::before { --b: rgba(255, 93, 108, .95); }
+  dialog.alarm h3 { color: #ff8a96; text-shadow: 0 0 10px rgba(255, 93, 108, .6); }
+  dialog.alarm h3::before { content: "⚠ "; }
+  .cd { position: relative; width: 136px; height: 136px; margin: 8px auto 16px; }
+  .cd svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+  .cd .trk { fill: none; stroke: rgba(255, 196, 87, .15); stroke-width: 5; }
+  .cd .tks { fill: none; stroke: rgba(255, 196, 87, .45); stroke-width: 6; stroke-dasharray: .4 2.933; }
+  .cd .val { fill: none; stroke: var(--warn); stroke-width: 5; stroke-linecap: round; stroke-dasharray: 100 100; transition: stroke-dashoffset 1s linear; filter: drop-shadow(0 0 6px rgba(255, 196, 87, .8)); }
+  .countdown {
+    position: absolute; inset: 0; display: grid; place-items: center; font: 600 46px/1 var(--hud);
+    color: var(--warn); font-variant-numeric: tabular-nums; text-shadow: 0 0 14px rgba(255, 196, 87, .6);
+  }
+  .cd small { position: absolute; left: 0; right: 0; bottom: 30px; text-align: center; font: 600 9px/1 var(--mono); letter-spacing: .25em; color: var(--muted); }
+
+  /* Toast über der Kopfleiste: verdeckt weder Knotenwerte noch Panel-Bedienelemente */
+  .toast {
+    position: fixed; z-index: 60; left: 50%; top: calc(var(--sat) + 6px); transform: translate(-50%, -10px);
+    width: max-content; max-width: calc(100vw - 24px); min-height: 44px; padding: 11px 14px; border-radius: 2px;
+    background: rgba(4, 20, 32, .98); border: 1px solid var(--line-2); border-left: 3px solid var(--cy);
+    font: 14px/1.35 var(--ui); color: var(--text); box-shadow: 0 6px 26px rgba(0, 0, 0, .5), 0 0 26px rgba(var(--cy-rgb), .22);
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.bad { border-color: rgba(255, 93, 108, .6); border-left-color: var(--bad); color: #ffd5da; }
+
+  @media (max-width: 380px) {
+    .bar { gap: 8px; padding-left: calc(var(--sal) + 12px); padding-right: calc(var(--sar) + 10px); }
+    .brand b { letter-spacing: .26em; font-size: 14px; }
+    .brand small { letter-spacing: .12em; }
+    .pill { letter-spacing: .04em; padding: 8px 7px 7px; font-size: 10px; }
+    .pill::before { margin-right: 5px; }
+  }
+  /* 320 px: „Server“ und „LLM aus · Regeln“ passen ungekürzt neben den Schriftzug */
+  @media (max-width: 340px) {
+    .bar { gap: 6px; padding-left: calc(var(--sal) + 10px); padding-right: calc(var(--sar) + 8px); }
+    .brand b { letter-spacing: .2em; }
+    .brand small { letter-spacing: .04em; }
+    .status { gap: 4px; }
+    .pill { letter-spacing: .02em; padding: 8px 5px 7px; }
+    .pill::before { width: 6px; height: 6px; margin-right: 4px; }
+  }
+  /* Handy quer: kompakte Kopf- und Befehlsleiste */
+  body.m-center .bar { padding-top: calc(var(--sat) + 6px); padding-bottom: 6px; }
+  body.m-center .cmdbar { --micw: 48px; height: 44px; bottom: calc(var(--sab) + 6px); left: var(--cl, calc(var(--sal) + 12px)); right: var(--cr, calc(var(--sar) + 12px)); }
+  .cmd.narrow { gap: 8px; padding: 0 calc(var(--micw) + 8px) 0 12px; }
+  .cmd.narrow .cmd-code, .cmd.narrow .cmd-src { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body class="m-sheet">
+<canvas id="fx" aria-hidden="true"></canvas>
+<div id="safe-probe" aria-hidden="true"></div>
+
+<header class="bar" id="bar">
+  <div class="brand"><b>JARVIS</b><small>ARC·VORTEX HUD</small></div>
+  <button class="status" id="status-btn" type="button" data-panel="system" aria-controls="panel-system" aria-expanded="false" aria-label="Systemstatus öffnen" aria-describedby="st-server st-llm">
+    <span id="st-server" class="pill">Server</span>
+    <span id="st-llm" class="pill">LLM</span>
+  </button>
+</header>
+
+<main id="rig" aria-label="JARVIS Module">
+  <button id="core" type="button" data-panel="chat" aria-controls="panel-chat" aria-expanded="false" aria-label="Kern: Befehl an JARVIS"></button>
+  <button class="node" id="n-licht" type="button" data-panel="licht" data-icon="licht" aria-controls="panel-licht" aria-expanded="false" aria-label="Licht öffnen" aria-describedby="nv-licht ns-licht">
+    <span class="lab"><span class="t">Licht</span><span class="v" id="nv-licht">–</span><span class="s" id="ns-licht"></span></span>
+  </button>
+  <button class="node" id="n-klima" type="button" data-panel="klima" data-icon="klima" aria-controls="panel-klima" aria-expanded="false" aria-label="Klima öffnen" aria-describedby="nv-klima ns-klima">
+    <span class="lab"><span class="t">Klima</span><span class="v" id="nv-klima">–</span><span class="s" id="ns-klima"></span></span>
+  </button>
+  <button class="node" id="n-skripte" type="button" data-panel="skripte" data-icon="skripte" aria-controls="panel-skripte" aria-expanded="false" aria-label="Skripte öffnen" aria-describedby="nv-skripte ns-skripte">
+    <span class="lab"><span class="t">Skripte</span><span class="v" id="nv-skripte">–</span><span class="s" id="ns-skripte"></span></span>
+  </button>
+  <button class="node" id="n-pc" type="button" data-panel="pc" data-icon="pc" aria-controls="panel-pc" aria-expanded="false" aria-label="PC öffnen" aria-describedby="nv-pc ns-pc">
+    <span class="lab"><span class="t">PC</span><span class="v" id="nv-pc">–</span><span class="s" id="ns-pc"></span></span>
+  </button>
+  <button class="node" id="n-system" type="button" data-panel="system" data-icon="system" aria-controls="panel-system" aria-expanded="false" aria-label="System öffnen" aria-describedby="nv-system ns-system">
+    <span class="lab"><span class="t">System</span><span class="v" id="nv-system">–</span><span class="s" id="ns-system"></span></span>
+  </button>
+</main>
+
+<div class="cmdbar" id="cmdbar">
+  <button class="cmd" id="cmd" type="button" data-panel="chat" aria-controls="panel-chat" aria-expanded="false" aria-label="Befehl eingeben" aria-describedby="cmd-text">
+    <span class="cmd-code" aria-hidden="true">CMD</span>
+    <span class="cmd-line"><span class="prompt" aria-hidden="true">›</span><span class="cmd-text hint" id="cmd-text">Befehl an JARVIS …</span><span class="caret" aria-hidden="true"></span></span>
+    <span class="cmd-src" id="cmd-src" aria-hidden="true">–</span>
+  </button>
+  <button class="rec-x" id="rec-cancel" type="button" data-rec-cancel hidden aria-label="Aufnahme verwerfen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>Verwerfen</button>
+  <button class="mic" id="mic" type="button" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
+</div>
+
+<!-- ===== Licht ===== -->
+<section class="panel" id="panel-licht" role="dialog" aria-modal="false" aria-labelledby="h-licht" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Modul 01 · WLED</div>
+      <h2 id="h-licht">Licht</h2>
+      <span id="led-state" class="p-state" aria-live="polite"></span>
+    </div>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body">
+    <div class="sec readout">
+      <span class="now" id="led-now" aria-hidden="true"></span>
+      <span class="big grow" id="led-big">–</span>
+      <button class="b icon" type="button" id="led-refresh" title="Zustand lesen" aria-label="Zustand lesen"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg></button>
+    </div>
+    <div class="sec two">
+      <button class="b" type="button" id="led-on" data-tool="led_power" data-args='{"state":"on"}' aria-pressed="false">An</button>
+      <button class="b" type="button" id="led-off" data-tool="led_power" data-args='{"state":"off"}' aria-pressed="false">Aus</button>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Helligkeit</span><span class="r" id="bri-val">–</span></div>
+      <input id="bri" type="range" min="0" max="100" step="1" value="50" aria-label="Helligkeit">
+      <div class="scale" aria-hidden="true"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Farbe</span><span class="r" id="color-name"></span></div>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Effekt</span></div>
+      <div class="chips" id="fx-chips"></div>
+      <form class="inline" id="fx-form" autocomplete="off">
+        <input type="text" id="fx-input" maxlength="64" placeholder="Effektname oder Nummer" aria-label="Effekt">
+        <button class="b" type="submit">Setzen</button>
+      </form>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Preset</span></div>
+      <div class="chips" id="ps-chips"></div>
+      <form class="inline" id="ps-form" autocomplete="off">
+        <input type="text" id="ps-input" maxlength="64" placeholder="Preset-Name oder Nummer" aria-label="Preset">
+        <button class="b" type="submit">Laden</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Klima ===== -->
+<section class="panel" id="panel-klima" role="dialog" aria-modal="false" aria-labelledby="h-klima" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Modul 02 · ESPHome</div>
+      <h2 id="h-klima">Klima</h2>
+      <span id="klima-state" class="p-state"></span>
+    </div>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body">
+    <div class="sensors" id="sensors"><span class="label">Noch nicht gelesen.</span></div>
+    <div class="stand">
+      <span class="label grow" id="sensor-time"></span>
+      <button class="b" type="button" id="sensor-refresh" aria-label="Sensoren lesen">Lesen</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Skripte ===== -->
+<section class="panel" id="panel-skripte" role="dialog" aria-modal="false" aria-labelledby="h-skripte" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Modul 03 · Prozesse</div>
+      <h2 id="h-skripte">Skripte</h2>
+      <span id="skripte-state" class="p-state"></span>
+    </div>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body">
+    <div class="scripts" id="scripts"><span class="label">Lade …</span></div>
+    <div class="stand">
+      <span class="grow"></span>
+      <button class="b" type="button" id="scripts-refresh" aria-label="Skripte aktualisieren">Aktualisieren</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===== PC ===== -->
+<section class="panel" id="panel-pc" role="dialog" aria-modal="false" aria-labelledby="h-pc" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Modul 04 · Steuerung</div>
+      <h2 id="h-pc">PC</h2>
+      <span id="pc-state" class="p-state" aria-live="polite"></span>
+    </div>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body">
+    <p class="desk-note" id="desk-note" hidden></p>
+    <div class="sec">
+      <div class="lbl"><span>Lautstärke</span><span class="r" id="vol-val">–</span></div>
+      <div class="vol">
+        <button class="b icon" type="button" id="vol-mute" aria-pressed="false" aria-label="Ton aus" title="Ton aus/an"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="w" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="m" d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg></button>
+        <input id="vol" class="unk" type="range" min="0" max="100" step="1" value="50" aria-label="Lautstärke" aria-describedby="vol-val">
+      </div>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Medien</span></div>
+      <div class="media">
+        <button class="b icon" type="button" data-media="previous" aria-label="Vorheriger Titel" title="Vorheriger Titel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6l-9 6 9 6z"/></svg></button>
+        <button class="b icon" type="button" data-media="play_pause" aria-label="Wiedergabe / Pause" title="Wiedergabe / Pause"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l8 6-8 6zM15 6v12M20 6v12"/></svg></button>
+        <button class="b icon" type="button" data-media="next" aria-label="Nächster Titel" title="Nächster Titel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l9 6-9 6z"/></svg></button>
+        <button class="b icon" type="button" data-media="stop" aria-label="Wiedergabe stoppen" title="Stopp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5h11v11h-11z"/></svg></button>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Programme</span><span class="r" id="apps-count"></span></div>
+      <div class="scripts" id="apps"><span class="label">Lade …</span></div>
+    </div>
+    <div class="sec scr">
+      <div class="lbl"><span>Bildschirm</span></div>
+      <form class="inline" id="screen-form" autocomplete="off">
+        <input type="text" id="screen-q" maxlength="300" placeholder="Frage (optional)" aria-label="Frage zum Bildschirm (optional)">
+        <button class="b" type="submit" id="screen-go" aria-label="Bildschirm beschreiben">Beschreiben</button>
+      </form>
+      <div class="desc" id="screen-desc" aria-live="polite" hidden></div>
+      <p class="note" id="screen-note">Das Bildschirmfoto geht nur an das lokale Vision-Modell und wird nicht gespeichert.</p>
+    </div>
+    <div class="sec">
+      <div class="lbl"><span>Sitzung · Energie</span></div>
+      <button class="b wide" type="button" id="lock" data-tool="desktop_lock">PC sperren</button>
+      <div class="warnbox" style="margin-top:12px"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+        <span>Herunterfahren startet erst nach Bestätigung (15 s Vorlauf).</span></div>
+      <div class="two">
+        <button class="b danger" type="button" id="shutdown">Herunterfahren</button>
+        <button class="b" type="button" id="shutdown-cancel" data-tool="pc_shutdown_cancel">Abbrechen</button>
+      </div>
+      <p class="note">„Abbrechen“ stoppt ein bereits geplantes Herunterfahren.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== System ===== -->
+<section class="panel" id="panel-system" role="dialog" aria-modal="false" aria-labelledby="h-system" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Modul 05 · Diagnose</div>
+      <h2 id="h-system">System</h2>
+    </div>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body">
+    <dl class="kv">
+      <dt>Server</dt><dd id="sys-server">–</dd>
+      <dt>Latenz</dt><dd id="sys-lat">–</dd>
+      <dt>LLM</dt><dd id="sys-llm">–</dd>
+      <dt>Modell</dt><dd id="sys-model">–</dd>
+      <dt>Hinweis</dt><dd id="sys-note">–</dd>
+      <dt>Stimme</dt><dd id="sys-tts">–</dd>
+      <dt>Mikrofon</dt><dd id="sys-stt">–</dd>
+      <dt>Bildschirm</dt><dd id="sys-vision">–</dd>
+    </dl>
+    <div class="sec two" style="margin-top:18px">
+      <button class="b" type="button" id="sys-refresh">Status prüfen</button>
+      <button class="b" type="button" id="logout">Token vergessen</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Befehl / Chat ===== -->
+<section class="panel chat" id="panel-chat" role="dialog" aria-modal="false" aria-labelledby="h-chat" hidden>
+  <div class="scan" aria-hidden="true"></div>
+  <header class="p-head">
+    <div class="p-tt">
+      <div class="p-code">Kern · Sprachbefehl</div>
+      <h2 id="h-chat">Befehl</h2>
+    </div>
+    <button class="b tog" type="button" id="speak-toggle" aria-pressed="false" aria-label="PC spricht"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="on" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg><span class="tl" aria-hidden="true">PC spricht</span></button>
+    <button class="x" type="button" data-close aria-label="Schließen"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </header>
+  <div class="p-body chatb">
+    <div class="log" id="log" aria-live="polite"></div>
+    <div class="suggest" id="suggest" aria-label="Vorschläge"></div>
+    <form class="send" id="chat-form" autocomplete="off">
+      <button class="b icon" type="button" id="chat-mic" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
+      <button class="b rec-cancel" type="button" id="chat-rec-cancel" data-rec-cancel hidden aria-label="Aufnahme verwerfen">Verwerfen</button>
+      <input type="text" id="chat-input" maxlength="500" placeholder="z. B. „Licht auf 40 % und blau“" aria-label="Nachricht">
+      <button class="b primary" type="submit" id="chat-send">Senden</button>
+    </form>
+  </div>
+</section>
+
+<dialog id="token-dialog" aria-labelledby="token-title">
+  <form method="dialog" id="token-form">
+    <h3 id="token-title">Zugang</h3>
+    <p class="label">API-Token eingeben. Der Installer zeigt ihn bei der Einrichtung (Schritt 6); er steht außerdem in <code>secrets.yaml</code> im JARVIS-Ordner (Eintrag <code>api_token</code>).</p>
+    <input type="password" id="token-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Token" required minlength="20" aria-label="API-Token" aria-describedby="token-err">
+    <label class="label" style="display:flex;align-items:center;gap:8px;margin-top:8px"><input type="checkbox" id="token-show" style="width:20px;height:20px;min-height:0;margin:0;padding:0;flex:none;accent-color:#3be3ff"> Token anzeigen</label>
+    <p class="d-err" id="token-err" role="alert" hidden></p>
+    <div class="row" style="margin-top:14px"><button class="b primary grow" type="submit">Speichern</button></div>
+  </form>
+</dialog>
+
+<dialog id="confirm-dialog" class="alarm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+  <h3 id="confirm-title">Bestätigen</h3>
+  <p id="confirm-text">PC herunterfahren?</p>
+  <div class="cd" aria-hidden="true">
+    <svg viewBox="0 0 120 120">
+      <circle class="trk" cx="60" cy="60" r="52"/>
+      <circle class="tks" cx="60" cy="60" r="44" pathLength="100"/>
+      <circle class="val" id="confirm-ring" cx="60" cy="60" r="52" pathLength="100"/>
+    </svg>
+    <div class="countdown" id="confirm-count">30</div>
+    <small>Sekunden</small>
+  </div>
+  <div class="two">
+    <button class="b" type="button" id="confirm-no" autofocus>Abbrechen</button>
+    <button class="b danger" type="button" id="confirm-yes">Bestätigen</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const TOKEN_KEY = "jarvis.token";
+  const COLORS = [
+    ["rot", "#ff0000"], ["orange", "#ff5a00"], ["gelb", "#ffbe00"], ["grün", "#00ff00"],
+    ["blau", "#0000ff"], ["lila", "#8c00ff"], ["pink", "#ff1478"], ["weiß", "#ffffff"], ["warmweiß", "#ffaa50"],
+  ];
+  const EFFECTS = ["Solid", "Rainbow", "Breathe", "Colorloop", "Fire 2012"];
+  const PRESETS = ["1", "2", "3"];
+  const SUGGEST = ["Licht an", "Licht aus", "Wie warm ist es?", "Welche Skripte laufen?"];
+  // Tool-Name → Knoten, dessen Arm bei Aufrufen aufleuchtet
+  const NODE_OF = (name) => /^led_/.test(name) ? "licht" : /^sensors_/.test(name) ? "klima"
+    : /^scripts_/.test(name) ? "skripte" : /^(pc|desktop|screen)_/.test(name) ? "pc" : null;
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const finePointer = matchMedia("(pointer: fine)");
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* privat/blockiert */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* egal */ } },
+  };
+  let token = store.get(TOKEN_KEY);
+
+  // =====================================================================
+  //  HUD: Arc-Reaktor, Strudel mit fünf Armen zu den Knoten, Partikel (Canvas)
+  // =====================================================================
+  const hud = (() => {
+    const TAU = Math.PI * 2;
+    const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
+    const F9 = "9px " + MONO, F95 = "9.5px " + MONO;
+    const cv = $("fx");
+    const ctx = cv.getContext("2d", { alpha: false });
+    const coreBtn = $("core"), bar = $("bar"), cmdEl = $("cmd"), probe = $("safe-probe");
+    const IDS = ["licht", "klima", "skripte", "pc", "system"];
+    const nodeEl = {};
+    for (const id of IDS) nodeEl[id] = $("n-" + id);
+    // Lage der Knoten: [x, y, Art], x/y normiert (-1 … 1) im freien Bereich.
+    // Art: "up" = Beschriftung über dem Ring (obere Reihe, der Arm kommt von unten), "dn" = darunter,
+    // "hl"/"hr" = waagerecht für Handy quer (Ring innen zum Kern, Text außen) – Arme kreuzen nie die Beschriftung.
+    const POS = {
+      portrait: { core: [0, -0.02], licht: [-0.7, -1, "up"], klima: [0.7, -1, "up"], system: [-1, 0.4, "dn"], skripte: [1, 0.4, "dn"], pc: [0, 1, "dn"] },
+      landscape: { core: [0, -0.1], licht: [-0.62, -1, "up"], klima: [0.62, -1, "up"], system: [-0.9, 0.34, "dn"], skripte: [0.9, 0.34, "dn"], pc: [0, 1, "dn"] },
+      short: { core: [0, 0], licht: [-1, -1, "hl"], system: [-1, 0, "hl"], pc: [-1, 1, "hl"], klima: [1, -0.55, "hr"], skripte: [1, 0.55, "hr"] },
+    };
+    const NODE_W = 112, LAB_H = 62, RING_H = 40;        // senkrechte Knoten: Breite, Beschriftung, halber Ring
+    const HN_W = 184, HN_H = 72, HRING_H = 32;           // waagerechte Knoten (Handy quer)
+    // Ringmitte innerhalb des Knoten-Elements je Art (für transform-origin und Platzierung)
+    const ORIGIN = { dn: [NODE_W / 2, RING_H], up: [NODE_W / 2, LAB_H + RING_H], hl: [HN_W - 4 - HRING_H, HN_H / 2], hr: [4 + HRING_H, HN_H / 2] };
+    // Ausdehnung um die Ringmitte: [links, rechts, oben, unten] (unskaliert)
+    const EXT = {
+      dn: [NODE_W / 2, NODE_W / 2, RING_H + 10, RING_H + LAB_H], up: [NODE_W / 2, NODE_W / 2, RING_H + LAB_H, RING_H + 10],
+      hl: [HN_W - 4 - HRING_H, 4 + HRING_H, HN_H / 2, HN_H / 2], hr: [4 + HRING_H, HN_W - 4 - HRING_H, HN_H / 2, HN_H / 2],
+    };
+    const SEG = 48;                 // Stützpunkte pro Arm
+    const V_IN = 0.92;              // Partikel verschwinden im Reaktor (Einheit: Kernradius R)
+    const FREE = 0.2;               // Anteil frei kreisender Strudel-Partikel (zwischen den Armen)
+    const SWEEPS = [1.9, 1.72, 1.55, 1.38, 1.2, 1.02, 0.85];
+
+    let W = 0, H = 0, DPR = 1, maxDpr = 2;
+    let mode = "sheet", kind = "portrait", NS = 1, dockW = 420;
+    let safe = { t: 0, r: 0, b: 0, l: 0 };
+    let bg = null, overlay = null, hazeC = null, hazeA = 0, swirlC = null, swirlR = 0, hexC = null;
+    let staticC = null, staticOk = false;   // Hintergrund + Führungen + Arm-Schleier zu EINEM Bild vereint (ruhender Zustand)
+    let glow = null, glowW = null, glowRed = null, coreSpr = null;
+    const tint = {}, tintKey = {};  // Halo-Sprite je Knoten (Licht: echte LED-Farbe)
+    let tintRgb = null, TSTY = null;
+    let STY = [], WHT = [], RED = [];
+    let accent = "59,227,255";
+    const cur = { cx: 0, cy: 0, R: 60, sweep: 1.5, n: {} };
+    const tgt = { cx: 0, cy: 0, R: 60, sweep: 1.5, n: {} };
+    let moving = false, firstLayout = true, panelOpen = false, settledOnce = false;
+    let teleBox = null, labels = [], centerBox = null, sheetTop = 0, hexRoom = { l: false, r: false }, hexY = [0, 0];
+    let cmdBox = null, cmdObst = null;   // Handy quer: Befehlsleiste nur in der Mittelspalte ({left, right} als CSS-Abstände)
+    let rot = 0, t = 0, emit = 0, spinBoost = 1, busy = false, last = 0, raf = 0, active = null, coreFlash = 0;
+    let boot = 0, bootT = 0;
+    const tele = { core: "ONLINE", lat: "–", clock: "" };
+    const teleL = ["", ""];
+    let teleNarrow = null;
+    // Telemetrie-Zeilen nur bei Änderung zusammensetzen (keine Strings pro Bild)
+    function teleText() {
+      teleL[0] = (teleNarrow ? "KERN·" : "KERN // ") + tele.core;
+      teleL[1] = (teleNarrow ? "" : "LATENZ ") + tele.lat;
+    }
+    const layoutCbs = [];
+
+    const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+    const ease = (x) => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+    const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 0.5;
+    const S = (a) => STY[clamp(Math.round(a * 20), 0, 20)];
+    const Wt = (a) => WHT[clamp(Math.round(a * 20), 0, 20)];
+
+    // ---------- Arme: fester Spiralverlauf vom Kern zu jedem Knoten ----------
+    const arms = IDS.map((id) => ({
+      id, lut: new Float32Array((SEG + 1) * 2), nrm: new Float32Array((SEG + 1) * 2), len: 1, sH: 0.2,
+      hot: false, burst: 0, flash: 0, flashBad: 0, blip: [0, 0], blipA: 0, ok: false,
+    }));
+    const tmpX = new Float32Array(SEG * 2 + 1), tmpY = new Float32Array(SEG * 2 + 1), tmpL = new Float32Array(SEG * 2 + 1);
+    // NS = Knoten-Maßstab: ≥ 1 auf großen Flächen, < 1 auf sehr flachen Handys quer (gilt für alle Knotenarten)
+    function ringR(id, n) { const k = (n || cur.n[id] || {}).kind; return (k === "hl" || k === "hr" ? HRING_H : RING_H) * NS; }
+    // Rohpunkte eines Arms (Parameter u: 0 = Kern, 1 = Ringrand am Knoten). Die Windung nimmt zum Kern hin zu –
+    // gleiche Drehrichtung wie der Strudel.
+    function armRaw(cx, cy, R, nx, ny, rr, sweep, n, xs, ys) {
+      const dx = nx - cx, dy = ny - cy, dist = Math.hypot(dx, dy), ang = Math.atan2(dy, dx);
+      const r0 = R * 1.12, r1 = Math.max(dist - rr - 3, r0 + 8);
+      for (let i = 0; i <= n; i++) {
+        const u = i / n, r = r0 + (r1 - r0) * u, phi = ang + sweep * Math.pow(1 - u, 1.6);
+        xs[i] = cx + Math.cos(phi) * r; ys[i] = cy + Math.sin(phi) * r;
+      }
+    }
+    function buildArms() {
+      const { cx, cy, R } = cur;
+      const RAW = SEG * 2;
+      for (let k = 0; k < IDS.length; k++) {
+        const a = arms[k], nd = cur.n[IDS[k]];
+        if (!nd) continue;
+        armRaw(cx, cy, R, nd.x, nd.y, ringR(IDS[k]) + 0, cur.sweep, RAW, tmpX, tmpY);
+        tmpL[0] = 0;
+        for (let i = 1; i <= RAW; i++) tmpL[i] = tmpL[i - 1] + Math.hypot(tmpX[i] - tmpX[i - 1], tmpY[i] - tmpY[i - 1]);
+        const len = Math.max(tmpL[RAW], 1);
+        // gleichmäßig nach Bogenlänge abtasten → konstante Geschwindigkeit und Schweiflänge
+        let j = 0;
+        for (let i = 0; i <= SEG; i++) {
+          const want = len * i / SEG;
+          while (j < RAW - 1 && tmpL[j + 1] < want) j++;
+          const f = clamp((want - tmpL[j]) / Math.max(tmpL[j + 1] - tmpL[j], 1e-6), 0, 1);
+          a.lut[i * 2] = tmpX[j] + (tmpX[j + 1] - tmpX[j]) * f;
+          a.lut[i * 2 + 1] = tmpY[j] + (tmpY[j + 1] - tmpY[j]) * f;
+        }
+        for (let i = 0; i <= SEG; i++) {
+          const i0 = Math.max(0, i - 1), i1 = Math.min(SEG, i + 1);
+          const tx = a.lut[i1 * 2] - a.lut[i0 * 2], ty = a.lut[i1 * 2 + 1] - a.lut[i0 * 2 + 1], tl = Math.hypot(tx, ty) || 1;
+          a.nrm[i * 2] = -ty / tl; a.nrm[i * 2 + 1] = tx / tl;
+        }
+        a.len = len;
+        // Übergabe an den Strudel, sobald der Arm den inneren Wirbel erreicht (~2 R)
+        let h = 0;
+        while (h < SEG && Math.hypot(a.lut[h * 2] - cx, a.lut[h * 2 + 1] - cy) < R * 2.05) h++;
+        a.sH = clamp(h / SEG, 0.04, 0.6);
+        // Radar-Blip-Punkt bei 2,8 R
+        let b = h;
+        while (b < SEG && Math.hypot(a.lut[b * 2] - cx, a.lut[b * 2 + 1] - cy) < R * 2.8) b++;
+        a.blip[0] = a.lut[b * 2]; a.blip[1] = a.lut[b * 2 + 1];
+        a.blipAng = Math.atan2(a.blip[1] - cy, a.blip[0] - cx);
+        a.ok = true;
+      }
+      armWeights();
+    }
+    let armCum = new Float32Array(IDS.length);
+    function armWeights() {
+      let s = 0;
+      for (let k = 0; k < arms.length; k++) { s += Math.max(arms[k].len * (1 - arms[k].sH), 1); armCum[k] = s; }
+      for (let k = 0; k < arms.length; k++) armCum[k] /= s;
+    }
+    function pickArm() {
+      const r = Math.random();
+      for (let k = 0; k < arms.length; k++) if (r <= armCum[k]) return k;
+      return arms.length - 1;
+    }
+    // Größte Windung wählen, bei der sich die Arme nicht zu nahe kommen und keinen fremden Knoten berühren.
+    const chkX = IDS.map(() => new Float32Array(25)), chkY = IDS.map(() => new Float32Array(25));
+    function pickSweep() {
+      const boxes = IDS.map((id) => nodeBox(id, tgt.n[id], 8));
+      const cb = cmdObst;   // Handy quer: Befehlsleiste in der Mittelspalte ist ebenfalls Hindernis
+      for (const sw of SWEEPS) {
+        for (let k = 0; k < IDS.length; k++) {
+          const nd = tgt.n[IDS[k]];
+          armRaw(tgt.cx, tgt.cy, tgt.R, nd.x, nd.y, ringR(IDS[k], nd), sw, 24, chkX[k], chkY[k]);
+        }
+        let ok = true;
+        for (let a = 0; a < IDS.length && ok; a++) {
+          for (let i = 6; i <= 24 && ok; i++) {
+            const x = chkX[a][i], y = chkY[a][i];
+            for (let b = 0; b < IDS.length && ok; b++) {
+              if (b === a) continue;
+              const bx = boxes[b];
+              if (x > bx[0] && x < bx[1] && y > bx[2] && y < bx[3]) ok = false;
+              if (b > a) for (let j = 6; j <= 24; j++) if (Math.hypot(chkX[b][j] - x, chkY[b][j] - y) < 22) { ok = false; break; }
+            }
+            if (y > H || y < 0 || x < 0 || x > W) ok = false;
+            if (cb && x > cb[0] && x < cb[1] && y > cb[2] && y < cb[3]) ok = false;
+          }
+        }
+        if (ok) return sw;
+      }
+      return SWEEPS[SWEEPS.length - 1];
+    }
+    function nodeBox(id, n, pad = 0) {
+      const e = EXT[n.kind], s = NS;
+      return [n.x - e[0] * s - pad, n.x + e[1] * s + pad, n.y - e[2] * s - pad, n.y + e[3] * s + pad];
+    }
+
+    // ---------- Farben und Sprites ----------
+    function styles() {
+      STY = []; WHT = []; RED = [];
+      for (let i = 0; i <= 20; i++) {
+        STY.push(`rgba(${accent},${i / 20})`); WHT.push(`rgba(225,252,255,${i / 20})`); RED.push(`rgba(255,93,108,${i / 20})`);
+      }
+      setTintStyles();
+    }
+    function setTintStyles() {
+      TSTY = null;
+      if (!tintRgb) return;
+      TSTY = [];
+      for (let i = 0; i <= 20; i++) TSTY.push(`rgba(${tintRgb},${i / 20})`);
+    }
+    function sprite(rgb, size, stops) {
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const g = c.getContext("2d");
+      const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      for (const [o, col, a] of stops) gr.addColorStop(o, `rgba(${col === "c" ? rgb : col},${a})`);
+      g.fillStyle = gr;
+      g.fillRect(0, 0, size, size);
+      return c;
+    }
+    const glowOf = (rgb) => sprite(rgb, 96, [[0, "c", 1], [0.16, "c", 0.55], [0.45, "c", 0.12], [1, "c", 0]]);
+    function sprites() {
+      glow = glowOf(accent);
+      glowW = glowOf("225,252,255");
+      glowRed = glowOf("255,93,108");
+      coreSpr = sprite(accent, 160, [[0, "255,255,255", 1], [0.3, "235,253,255", 0.95], [0.55, "c", 0.75], [0.8, "c", 0.2], [1, "c", 0]]);
+    }
+
+    function readSafe() {
+      const cs = getComputedStyle(probe);
+      return { t: parseFloat(cs.paddingTop) || 0, r: parseFloat(cs.paddingRight) || 0, b: parseFloat(cs.paddingBottom) || 0, l: parseFloat(cs.paddingLeft) || 0 };
+    }
+
+    // Statischer Hintergrund (Raster, Scanlines, Lineale, Vignette) – einmal pro Größenänderung
+    function buildBg() {
+      staticOk = false;
+      bg = document.createElement("canvas");
+      bg.width = Math.round(W * DPR); bg.height = Math.round(H * DPR);
+      const g = bg.getContext("2d");
+      g.scale(DPR, DPR);
+      g.fillStyle = "#02070d"; g.fillRect(0, 0, W, H);
+      const gx = cur.cx || W / 2, gy = cur.cy || H * 0.45;
+      let gr = g.createRadialGradient(gx, gy, 0, gx, gy, Math.max(W, H) * 0.75);
+      gr.addColorStop(0, "rgba(9,52,78,0.7)"); gr.addColorStop(0.4, "rgba(4,24,40,0.5)"); gr.addColorStop(1, "rgba(2,7,13,0)");
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      const sp = 22;
+      g.fillStyle = `rgba(${accent},0.085)`;
+      for (let y = sp / 2; y < H; y += sp) for (let x = sp / 2; x < W; x += sp) g.fillRect(x, y, 1, 1);
+      g.fillStyle = `rgba(${accent},0.16)`;
+      for (let y = sp / 2; y < H; y += sp * 4) for (let x = sp / 2; x < W; x += sp * 4) { g.fillRect(x - 3, y, 7, 1); g.fillRect(x, y - 3, 1, 7); }
+      g.fillStyle = "rgba(0,0,0,0.16)";
+      for (let y = 0; y < H; y += 3) g.fillRect(0, y, W, 1);
+      // Skalen-Lineale unter der Kopfleiste und über der Befehlsleiste
+      // (Handy quer: unteres Lineal nur so breit wie die Befehlsleiste in der Mittelspalte)
+      const yT = bar.getBoundingClientRect().bottom - 2, yB = cmdEl.getBoundingClientRect().top - 6;
+      for (const y of [yT, yB]) {
+        const x0 = y === yB && cmdBox ? cmdBox.left + 4 : 16, x1 = y === yB && cmdBox ? W - cmdBox.right - 4 : W - 16;
+        g.fillStyle = `rgba(${accent},0.14)`; g.fillRect(x0, y, x1 - x0, 1);
+        for (let x = x0, i = 0; x <= x1; x += 8, i++) {
+          const h = i % 10 === 0 ? 6 : i % 5 === 0 ? 4 : 2;
+          g.fillStyle = `rgba(${accent},${i % 10 === 0 ? 0.32 : 0.16})`;
+          g.fillRect(x, y === yT ? y + 1 : y - h, 1, h);
+        }
+        g.fillStyle = `rgba(${accent},0.55)`; g.fillRect((x0 + x1) / 2 - 14, y === yT ? y : y - 1, 28, 2);
+      }
+      gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.78);
+      gr.addColorStop(0, "rgba(0,0,0,0)"); gr.addColorStop(1, "rgba(0,0,0,0.65)");
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    }
+
+    // Feste Führungen (Fadenkreuz, Ringe, Gradzahlen, Kanal-Codes) – nach jedem Layout einmal vorgezeichnet
+    function drawGuides(g, withText) {
+      const { cx, cy, R } = cur;
+      g.lineWidth = 1;
+      g.strokeStyle = S(0.05);
+      g.beginPath(); g.moveTo(0, cy); g.lineTo(W, cy); g.moveTo(cx, 0); g.lineTo(cx, H); g.stroke();
+      g.strokeStyle = S(0.1);
+      g.beginPath(); g.arc(cx, cy, R * 2.3, 0, TAU); g.stroke();
+      g.setLineDash([2, 9]);
+      g.beginPath(); g.arc(cx, cy, R * 3.25, 0, TAU); g.stroke();
+      g.setLineDash([]);
+      if (!withText) return;
+      g.font = F9; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillStyle = S(0.45);
+      for (const L of labels) g.fillText(L[0], L[1], L[2]);
+    }
+    function computeLabels() {
+      const { cx, cy, R } = cur;
+      labels = [];
+      const boxes = IDS.map((id) => nodeBox(id, cur.n[id], 4));
+      const lr = R * 2.62;
+      const yMin = bar.getBoundingClientRect().bottom + 8, yMax = cmdEl.getBoundingClientRect().top - 10;
+      const tb = teleBox;
+      const free = (x, y, rad) => {
+        if (x < 14 || x > W - 14 || y < yMin || y > yMax) return false;
+        if (tb && Math.abs(x - tb.x) < tb.w / 2 + rad && y > tb.y - 14 - rad && y < tb.y + 34 + rad) return false;
+        for (const b of boxes) if (x > b[0] - rad && x < b[1] + rad && y > b[2] - 8 && y < b[3] + 8) return false;
+        for (const a of arms) for (let i = 0; i <= SEG; i += 2) if (Math.hypot(a.lut[i * 2] - x, a.lut[i * 2 + 1] - y) < rad) return false;
+        return true;
+      };
+      for (let d = 0; d < 360; d += 30) {
+        const an = d * Math.PI / 180, x = cx + Math.cos(an) * lr, y = cy + Math.sin(an) * lr;
+        if (free(x, y, 20)) labels.push([String(d).padStart(3, "0"), x, y]);
+      }
+      if (R >= 50) {
+        for (let k = 0; k < arms.length; k++) {
+          const a = arms[k], i = Math.round(SEG * 0.52);
+          const x = a.lut[i * 2] - a.nrm[i * 2] * 16, y = a.lut[i * 2 + 1] - a.nrm[i * 2 + 1] * 16;
+          if (free(x, y, 6)) labels.push(["K-0" + (k + 1), x, y]);
+        }
+      }
+    }
+    function buildOverlay() {
+      staticOk = false;
+      if (!overlay) overlay = document.createElement("canvas");
+      overlay.width = Math.round(W * DPR); overlay.height = Math.round(H * DPR);
+      const g = overlay.getContext("2d");
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      g.clearRect(0, 0, W, H);
+      drawGuides(g, true);
+    }
+    // Weicher Schleier entlang der fünf Arme (halbe Auflösung, nach jedem Layout)
+    function buildHaze() {
+      const res = 0.5;
+      staticOk = false;
+      if (!hazeC) hazeC = document.createElement("canvas");
+      hazeC.width = Math.ceil(W * res); hazeC.height = Math.ceil(H * res);
+      const g = hazeC.getContext("2d");
+      g.setTransform(res, 0, 0, res, 0, 0);
+      g.clearRect(0, 0, W, H);
+      g.globalCompositeOperation = "lighter";
+      g.lineJoin = "round"; g.lineCap = "round";
+      const { cx, cy, R } = cur;
+      const far = Math.max(...arms.map((a) => Math.hypot(a.lut[SEG * 2] - cx, a.lut[SEG * 2 + 1] - cy)), R * 3);
+      const gr = g.createRadialGradient(cx, cy, R, cx, cy, far);
+      gr.addColorStop(0, `rgba(${accent},1)`); gr.addColorStop(0.55, `rgba(${accent},0.6)`); gr.addColorStop(1, `rgba(${accent},0.28)`);
+      g.strokeStyle = gr;
+      for (const a of arms) {
+        g.beginPath();
+        g.moveTo(a.lut[0], a.lut[1]);
+        for (let i = 1; i <= SEG; i++) g.lineTo(a.lut[i * 2], a.lut[i * 2 + 1]);
+        // mehrere Breiten übereinander → weiches, annähernd gaußförmiges Profil ohne sichtbare Röhrenkante
+        for (const [wd, al] of [[0.95, 0.035], [0.66, 0.045], [0.42, 0.06], [0.24, 0.08], [0.11, 0.11], [0.045, 0.16]]) {
+          g.globalAlpha = al; g.lineWidth = R * wd; g.stroke();
+        }
+      }
+      g.globalAlpha = 1;
+    }
+    // Rotierender innerer Wirbel (Textur aus vielen kurzen Strähnen) + Kern-Leuchten
+    function buildSwirl(R) {
+      const res = 0.5, ext = 3.5;
+      const size = Math.ceil(2 * ext * R * res) + 4;
+      swirlC = document.createElement("canvas");
+      swirlC.width = swirlC.height = size;
+      const g = swirlC.getContext("2d");
+      g.setTransform(res, 0, 0, res, size / 2, size / 2);
+      g.globalCompositeOperation = "lighter";
+      g.lineCap = "round"; g.lineJoin = "round";
+      const gr = g.createRadialGradient(0, 0, R * 0.9, 0, 0, R * ext);
+      gr.addColorStop(0, `rgba(${accent},1)`); gr.addColorStop(0.45, `rgba(${accent},0.5)`); gr.addColorStop(1, `rgba(${accent},0)`);
+      g.strokeStyle = gr;
+      const STR = 7;
+      for (let k = 0; k < STR; k++) {
+        g.beginPath();
+        for (let i = 0; i <= 40; i++) {
+          const r = R * (3.3 - 2.25 * i / 40), th = k * TAU / STR + 1.7 * Math.pow(Math.log(3.3 * R / r), 1.15);
+          if (i) g.lineTo(Math.cos(th) * r, Math.sin(th) * r); else g.moveTo(Math.cos(th) * r, Math.sin(th) * r);
+        }
+        g.globalAlpha = 0.05; g.lineWidth = R * 0.5; g.stroke();
+        g.globalAlpha = 0.1; g.lineWidth = R * 0.16; g.stroke();
+        g.globalAlpha = 0.2; g.lineWidth = 1.6 / res; g.stroke();
+      }
+      g.globalAlpha = 1;
+      g.drawImage(glow, -R * 2.7, -R * 2.7, R * 5.4, R * 5.4);
+      swirlR = R;
+    }
+    // Hex-Datenströme an den Rändern (nur große Bildschirme)
+    function buildHex() {
+      hexC = null;
+      if (W < 1100 || H < 600) return;
+      hexC = document.createElement("canvas");
+      const lines = Math.ceil(H / 14) * 2;
+      hexC.width = Math.round(64 * DPR); hexC.height = Math.round(lines * 14 * DPR);
+      const g = hexC.getContext("2d");
+      g.scale(DPR, DPR);
+      g.font = F9; g.textBaseline = "top";
+      for (let i = 0; i < lines / 2; i++) {
+        const s = ((Math.random() * 65536) | 0).toString(16).toUpperCase().padStart(4, "0") + " " + ((Math.random() * 256) | 0).toString(16).toUpperCase().padStart(2, "0");
+        g.fillStyle = `rgba(${accent},${Math.random() < 0.15 ? 0.55 : 0.22})`;
+        g.fillText(s, 4, i * 14); g.fillText(s, 4, (i + lines / 2) * 14);
+      }
+    }
+
+    // ---------- Partikel (typisierte Arrays, keine Allokation pro Bild) ----------
+    // Modus 0: fließt entlang eines Arms vom Knoten zum Kern; Modus 1: kreist im Strudel (Polarkoordinaten,
+    // innen schneller: omega ~ r^-1.25) und verschwindet im Reaktor.
+    let N = 0, P = null;
+    function alloc(n) {
+      N = n;
+      const f = () => new Float32Array(n), u = () => new Uint8Array(n);
+      P = {
+        mode: u(), k: u(), c: u(), b: u(), s: f(), g: f(), v: f(), r: f(), th: f(), om: f(), dr: f(), sp: f(), age: f(), a: f(), sz: f(),
+        x: f(), y: f(), x1: f(), y1: f(), x2: f(), y2: f(), fa: f(),
+      };
+      for (let i = 0; i < n; i++) spawn(i, true);
+    }
+    function spawn(i, scatter) {
+      P.age[i] = scatter ? 9 : 0;
+      P.v[i] = 0.8 + Math.random() * 0.45;
+      P.sz[i] = Math.random() < 0.1 ? 2.7 : Math.random() < 0.5 ? 2 : 1.5;
+      P.a[i] = 0.4 + Math.random() * 0.6;
+      P.c[i] = Math.random() < 0.16 ? 1 : 0;
+      P.g[i] = clamp(gauss(), -2.2, 2.2);
+      if (!settledOnce || Math.random() < FREE) {
+        P.mode[i] = 1;
+        P.r[i] = scatter ? V_IN + Math.random() * (3.3 - V_IN) : 2.3 + Math.random() * 1.1;
+        P.th[i] = Math.random() * TAU;
+      } else {
+        P.mode[i] = 0;
+        P.k[i] = pickArm();
+        // meist direkt am Knoten (der Knoten speist den Strudel), ein Teil glimmt unterwegs auf → gleichmäßig dichter Arm
+        const sH = arms[P.k[i]].sH;
+        P.s[i] = scatter || Math.random() < 0.4 ? sH + 0.03 + Math.random() * (0.97 - sH) : 0.985 + Math.random() * 0.015;
+        if (P.k[i] === 0 && tintRgb && Math.random() < 0.7) P.c[i] = 2;
+      }
+    }
+    function toPolar(i) {
+      const a = arms[P.k[i]];
+      armPoint(a, P.s[i], P.g[i] * armWidth(P.s[i]));
+      const dx = PX - cur.cx, dy = PY - cur.cy;
+      P.mode[i] = 1; P.r[i] = Math.max(Math.hypot(dx, dy) / cur.R, V_IN + 0.05); P.th[i] = Math.atan2(dy, dx);
+      P.om[i] = 2.3 * Math.pow(V_IN / P.r[i], 1.25) * spinBoost;
+      P.dr[i] = (0.2 + 0.11 * P.r[i]) * P.v[i] * spinBoost;
+    }
+    let PX = 0, PY = 0;
+    function armPoint(a, s, off) {
+      const f = clamp(s, 0, 1) * SEG, i = Math.min(f | 0, SEG - 1), k = f - i, L = a.lut, M = a.nrm;
+      const nx = M[i * 2] + (M[i * 2 + 2] - M[i * 2]) * k, ny = M[i * 2 + 1] + (M[i * 2 + 3] - M[i * 2 + 1]) * k;
+      PX = L[i * 2] + (L[i * 2 + 2] - L[i * 2]) * k + nx * off;
+      PY = L[i * 2 + 1] + (L[i * 2 + 3] - L[i * 2 + 1]) * k + ny * off;
+    }
+    let WMAX = 12;
+    const armWidth = (s) => 1.2 + WMAX * Math.pow(4 * s * (1 - s), 0.75);
+    let D = null, nD = 0, O = null, nO = 0;
+    function allocDust(n) {
+      nD = n;
+      D = { x: new Float32Array(n), y: new Float32Array(n), a: new Float32Array(n), ph: new Float32Array(n), f: new Float32Array(n), v: new Float32Array(n), sz: new Float32Array(n) };
+      for (let i = 0; i < n; i++) spawnD(i, true);
+    }
+    function spawnD(i, anywhere) {
+      if (anywhere) { D.x[i] = Math.random() * W; D.y[i] = Math.random() * H; }
+      else { const e = Math.random() * 4 | 0; D.x[i] = e === 0 ? 0 : e === 1 ? W : Math.random() * W; D.y[i] = e === 2 ? 0 : e === 3 ? H : Math.random() * H; }
+      D.a[i] = 0.15 + Math.random() * 0.5; D.ph[i] = Math.random() * TAU; D.f[i] = 0.6 + Math.random() * 2; D.v[i] = 6 + Math.random() * 14;
+      D.sz[i] = Math.random() < 0.15 ? 1.7 : 1.1;
+    }
+    function allocOrbit(n) {
+      nO = n;
+      O = { r: new Float32Array(n), ang: new Float32Array(n), w: new Float32Array(n), len: new Float32Array(n), a: new Float32Array(n) };
+      for (let i = 0; i < n; i++) {
+        O.r[i] = 1.12 + Math.random() * 0.62; O.ang[i] = Math.random() * TAU; O.w[i] = (0.5 + Math.random() * 0.9) * (1.9 - O.r[i] * 0.6);
+        O.len[i] = 0.08 + Math.random() * 0.3; O.a[i] = 0.25 + Math.random() * 0.6;
+      }
+    }
+    // Lichtpulse auf den Armen: 0 = Grundrauschen, 1 = Erfolg (Kern → Knoten), 2 = Fehler (rot), 3 = Anfrage (Knoten → Kern)
+    const PM = 40;
+    const Q = { on: new Uint8Array(PM), k: new Uint8Array(PM), kind: new Uint8Array(PM), s: new Float32Array(PM), dir: new Int8Array(PM), v: new Float32Array(PM) };
+    function addPulse(k, kind, dir, v, s) {
+      for (let p = 0; p < PM; p++) {
+        if (Q.on[p]) continue;
+        Q.on[p] = 1; Q.k[p] = k; Q.kind[p] = kind; Q.dir[p] = dir; Q.v[p] = v; Q.s[p] = s;
+        return;
+      }
+    }
+    for (let k = 0; k < IDS.length; k++) {
+      addPulse(k, 0, 1, 40 + Math.random() * 40, Math.random());
+      addPulse(k, 0, -1, 50 + Math.random() * 40, Math.random());
+    }
+    const blips = new Float32Array(IDS.length);
+    let radarG = null;
+    const radarK = new Float64Array(3);
+
+    // ---------- Layout ----------
+    function layout() {
+      safe = readSafe();
+      // Handy quer erkennen (wenig Höhe, viel Breite); die Modus-Klasse ändert Kopf-/Befehlsleiste → danach neu messen
+      const short = H - safe.t - safe.b < 560 && W - safe.l - safe.r > (H - safe.t - safe.b) * 1.55;
+      const nextMode = short ? "center" : W >= 900 ? "dock" : "sheet";
+      if (nextMode !== mode) {
+        document.body.classList.remove("m-" + mode);
+        mode = nextMode;
+      }
+      document.body.classList.add("m-" + mode);
+      const barB = bar.getBoundingClientRect().bottom, cmdT = cmdEl.getBoundingClientRect().top;
+      const top = barB + 4, bottom = cmdT - 8;
+      let left = safe.l + 10, right = W - safe.r - 10;
+      const ah = Math.max(bottom - top, 200);
+      dockW = Math.round(Math.min(420, W * 0.38));
+      document.documentElement.style.setProperty("--dockw", dockW + "px");
+      if (mode === "dock" && panelOpen) right = W - safe.r - dockW - 44;
+      const aw = right - left;
+      kind = short ? "short" : aw < ah * 1.05 ? "portrait" : "landscape";
+      const pos = POS[kind];
+      centerBox = null; cmdBox = null; cmdObst = null;
+      if (short) {
+        // Handy quer: zwei Knotenspalten über die volle Höhe (auf sehr flachen Bildschirmen verkleinert),
+        // Kern und Befehlsleiste in der Mittelspalte – so verdeckt die Leiste nie einen Knoten.
+        const ch = Math.max(H - safe.b - 6 - top, 140);
+        NS = clamp((ch - 12) / (3 * HN_H), 0.7, 1);
+        const my = top + ch / 2, hy = Math.max(ch / 2 - HN_H * NS / 2 - 2, HN_H * NS + 4);
+        const xl = left + EXT.hl[0] * NS, xr = right - EXT.hr[1] * NS;
+        for (const id of IDS) {
+          const [px, py, k] = pos[id];
+          tgt.n[id] = { x: px < 0 ? xl : xr, y: my + py * hy, kind: k };
+        }
+        const il = xl + EXT.hl[1] * NS + 10, ir = xr - EXT.hr[0] * NS - 10;   // Innenkanten der Spalten
+        cmdBox = { left: Math.round(il), right: Math.round(W - ir) };
+        cmdObst = [il - 6, ir + 6, cmdT - 10, H];
+        const midB = cmdT - 8;
+        tgt.cx = (left + right) / 2; tgt.cy = top + (midB - top) / 2;
+        tgt.R = clamp(Math.min(ir - il - 24, midB - top) * 0.21, 26, 64);
+        // Panel zwischen den Spalten; ist dort zu wenig Platz (< 300 px), mittig über der Bühne (verdeckte Knoten → inert)
+        let pw = Math.min(440, ir - il - 4), pl = (il + ir) / 2 - pw / 2;
+        const over = pw < 300;
+        if (over) { const avail = W - safe.l - safe.r - 24; pw = Math.min(440, avail); pl = safe.l + 12 + (avail - pw) / 2; }
+        const pt = over || H - safe.t - safe.b < 300 ? safe.t + 6 : barB + 2;
+        centerBox = { left: Math.round(pl), width: Math.round(pw), top: Math.round(pt), height: Math.round(H - pt - safe.b - 6), over };
+      } else {
+        NS = clamp(Math.min(aw, ah * 1.2) / 600, 1, 1.3);
+        let pyMin = Infinity, pyMax = -Infinity, upMin = 0, dnMax = 0;
+        for (const id of IDS) {
+          const [, py, k] = pos[id], e = EXT[k];
+          if (py < pyMin - 1e-6) { pyMin = py; upMin = e[2]; } else if (Math.abs(py - pyMin) < 1e-6) upMin = Math.max(upMin, e[2]);
+          if (py > pyMax + 1e-6) { pyMax = py; dnMax = e[3]; } else if (Math.abs(py - pyMax) < 1e-6) dnMax = Math.max(dnMax, e[3]);
+        }
+        const hy = Math.max((ah - (upMin + dnMax) * NS) / (pyMax - pyMin), 60);
+        const my = top + upMin * NS - pyMin * hy;
+        const hx = Math.max(aw / 2 - (NODE_W / 2) * NS - 2, 70);
+        const mx = left + aw / 2;
+        for (const id of IDS) {
+          const [px, py, k] = pos[id];
+          tgt.n[id] = { x: mx + px * hx, y: my + py * hy, kind: k };
+        }
+        tgt.cx = mx + pos.core[0] * hx; tgt.cy = my + pos.core[1] * hy;
+        let R = clamp(Math.min(aw, ah) * 0.155, 40, 96);
+        // Reaktor darf keinen Knoten berühren
+        for (let it = 0; it < 14; it++) {
+          let hit = false;
+          for (const id of IDS) {
+            const b = nodeBox(id, tgt.n[id], 6);
+            const qx = clamp(tgt.cx, b[0], b[1]), qy = clamp(tgt.cy, b[2], b[3]);
+            if (Math.hypot(qx - tgt.cx, qy - tgt.cy) < R * 1.62) { hit = true; break; }
+          }
+          if (!hit) break;
+          R *= 0.93;
+        }
+        tgt.R = Math.max(R, 30);
+      }
+      tgt.sweep = pickSweep();
+      // Oberkante des Handy-Sheets: knapp unter den Ringen der oberen Knotenreihe
+      sheetTop = 0;
+      for (const id of IDS) if (tgt.n[id].kind === "up") sheetTop = Math.max(sheetTop, tgt.n[id].y + (RING_H + 12) * NS);
+      if (!sheetTop) sheetTop = H * 0.26;
+      sheetTop = clamp(sheetTop, H * 0.16, H * 0.5);
+      // Telemetrie-Block oben zwischen den oberen Knoten
+      teleBox = null;
+      if (!short) {
+        const up = IDS.filter((id) => tgt.n[id].kind === "up").map((id) => tgt.n[id]);
+        if (up.length === 2) {
+          const [a, b] = up[0].x < up[1].x ? up : [up[1], up[0]];
+          const x0 = a.x + RING_H * NS + 10, x1 = b.x - RING_H * NS - 10;
+          if (x1 - x0 >= 64) teleBox = { x: (x0 + x1) / 2, y: Math.min(a.y, b.y) - 16 * NS, w: x1 - x0, narrow: x1 - x0 < 96 };
+        }
+      }
+      if (firstLayout) {
+        firstLayout = false;
+        cur.cx = tgt.cx; cur.cy = tgt.cy; cur.R = tgt.R; cur.sweep = tgt.sweep;
+        for (const id of IDS) cur.n[id] = { x: tgt.cx, y: tgt.cy, kind: tgt.n[id].kind };
+        coreBtn.style.width = coreBtn.style.height = "1px";
+        requestAnimationFrame(() => document.body.classList.add("ready"));
+      }
+      for (const id of IDS) {
+        const k = tgt.n[id].kind;
+        cur.n[id].kind = k;
+        const elx = nodeEl[id];
+        const cls = "node k-" + k;
+        if (elx.className !== cls) elx.className = cls;
+        elx.style.transformOrigin = ORIGIN[k][0] + "px " + ORIGIN[k][1] + "px";
+      }
+      WMAX = tgt.R * 0.22;
+      // Platz für Hex-Datenströme an den Rändern?
+      let minL = Infinity, maxR = -Infinity;
+      for (const id of IDS) { const b = nodeBox(id, tgt.n[id]); minL = Math.min(minL, b[0]); maxR = Math.max(maxR, b[1]); }
+      hexRoom = { l: minL - safe.l > 84, r: (mode === "dock" && panelOpen ? -1 : W - safe.r - maxR) > 84 };
+      hexY = [barB + 6, cmdT - 10];
+      // Ziel unverändert (z. B. Panel auf dem Handy geöffnet) → keine Übergangsanimation
+      let diff = Math.abs(tgt.cx - cur.cx) + Math.abs(tgt.cy - cur.cy) + Math.abs(tgt.R - cur.R) + Math.abs(tgt.sweep - cur.sweep);
+      for (const id of IDS) diff += Math.abs(tgt.n[id].x - cur.n[id].x) + Math.abs(tgt.n[id].y - cur.n[id].y);
+      if (diff > 0.5 || moving) moving = true;
+      if (reduceMotion.matches && moving) settle();
+      for (const cb of layoutCbs) cb();
+      kick();
+    }
+    function settle() {
+      cur.cx = tgt.cx; cur.cy = tgt.cy; cur.R = tgt.R; cur.sweep = tgt.sweep;
+      for (const id of IDS) { cur.n[id].x = tgt.n[id].x; cur.n[id].y = tgt.n[id].y; }
+      moving = false;
+      placeDom(); buildArms();
+      computeLabels(); buildOverlay(); buildHaze();
+      if (!swirlC || Math.abs(swirlR - cur.R) > 2) buildSwirl(cur.R);
+      if (!settledOnce) {
+        settledOnce = true;
+        // Arme mit Partikeln füllen (Startverteilung), danach kurz vorsimulieren
+        for (let i = 0; i < N; i++) if (Math.random() > FREE * 0.8) { spawn(i, true); }
+        for (let i = 0; i < 40; i++) stepParticles(1 / 30);
+      }
+      if (reduceMotion.matches) hazeA = 1;
+    }
+    function placeDom() {
+      for (const id of IDS) {
+        const p = cur.n[id], o = ORIGIN[p.kind], s = NS;
+        nodeEl[id].style.transform = `translate3d(${(p.x - o[0]).toFixed(1)}px,${(p.y - o[1]).toFixed(1)}px,0)` + (s !== 1 ? ` scale(${s.toFixed(3)})` : "");
+      }
+      const d = Math.round(cur.R * 3.2);
+      coreBtn.style.width = coreBtn.style.height = d + "px";
+      coreBtn.style.transform = `translate3d(${(cur.cx - d / 2).toFixed(1)}px,${(cur.cy - d / 2).toFixed(1)}px,0)`;
+    }
+
+    function resize() {
+      W = window.innerWidth; H = window.innerHeight;
+      DPR = Math.min(window.devicePixelRatio || 1, maxDpr);
+      cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      const area = W * H;
+      // Partikelbudget mit der Fläche skaliert, gesamt ≤ ~350 (Strudel ≤ 270 + Staub ≤ 40 + Orbit ≤ 24 + ~10 Pulse)
+      const n = clamp(Math.round(area / 1150), 170, 270);
+      if (!P || Math.abs(n - N) > N * 0.15) alloc(n);
+      const nd = clamp(Math.round(area / 12000), 22, 40), no = clamp(Math.round(area / 26000), 12, 24);
+      if (!D || nd !== nD) allocDust(nd);
+      if (!O || no !== nO) allocOrbit(no);
+      layout();
+      buildBg(); buildHex();
+      if (!moving) { buildOverlay(); buildHaze(); }
+    }
+
+    // ---------- Bewegung ----------
+    function stepParticles(dt) {
+      const R = cur.R, V0 = 38 * R / 60;
+      for (let i = 0; i < N; i++) {
+        P.age[i] += dt;
+        if (P.mode[i] === 0) {
+          const a = arms[P.k[i]], s = P.s[i], u = 1 - s;
+          const sp = V0 * (1 + 1.5 * u * u) * P.v[i] * spinBoost;
+          P.sp[i] = sp;
+          P.s[i] = s - sp * dt / a.len;
+          if (P.s[i] <= a.sH) toPolar(i);
+        } else {
+          const r = P.r[i];
+          P.om[i] = 2.3 * Math.pow(V_IN / r, 1.25) * spinBoost;
+          P.dr[i] = (0.2 + 0.11 * r) * P.v[i] * spinBoost;
+          P.th[i] += P.om[i] * dt;
+          P.r[i] = r - P.dr[i] * dt;
+          if (P.r[i] < V_IN) spawn(i, false);
+        }
+      }
+    }
+    let mvK = 0, mvD = 0;
+    function mv(o, key, to) { const v = o[key] + (to - o[key]) * mvK; mvD = Math.max(mvD, Math.abs(to - v)); o[key] = v; }
+    function step(dt) {
+      if (boot < 1) { bootT += dt; boot = Math.min(1, bootT / 1.6); }
+      if (moving) {
+        mvK = 1 - Math.exp(-dt * 6); mvD = 0;
+        let waiting = false;
+        const k = mvK;
+        mv(cur, "cx", tgt.cx); mv(cur, "cy", tgt.cy); mv(cur, "R", tgt.R);
+        cur.sweep += (tgt.sweep - cur.sweep) * k;
+        for (let i = 0; i < IDS.length; i++) {
+          const id = IDS[i];
+          if (boot < 1 && bootT < 0.25 + i * 0.1) { waiting = true; continue; }   // Knoten fliegen nacheinander aus dem Kern
+          mv(cur.n[id], "x", tgt.n[id].x); mv(cur.n[id], "y", tgt.n[id].y);
+        }
+        if (mvD < 0.3 && !waiting) settle(); else { placeDom(); buildArms(); }
+        hazeA = Math.max(0, hazeA - dt * 6);
+      } else if (hazeA < 1) hazeA = Math.min(1, hazeA + dt * 2.5);
+      spinBoost += ((busy ? 3.2 : 1) - spinBoost) * Math.min(1, dt * 3);
+      rot += dt * 0.2 * spinBoost; t += dt;
+      emit += dt * 0.32 * spinBoost;
+      coreFlash = Math.max(0, coreFlash - dt * 2);
+      stepParticles(dt);
+      const { cx, cy, R } = cur;
+      for (let i = 0; i < nD; i++) {
+        const dx = D.x[i] - cx, dy = D.y[i] - cy, r = Math.hypot(dx, dy) || 1;
+        const v = D.v[i] * (0.4 + 80 / (r + 60));
+        D.x[i] += (-dy / r * v - dx / r * 3) * dt;
+        D.y[i] += (dx / r * v - dy / r * 3) * dt;
+        if (r < R * 1.3 || D.x[i] < -10 || D.y[i] < -10 || D.x[i] > W + 10 || D.y[i] > H + 10) spawnD(i, false);
+      }
+      for (let i = 0; i < nO; i++) O.ang[i] += O.w[i] * dt * spinBoost;
+      for (let p = 0; p < PM; p++) {
+        if (!Q.on[p]) continue;
+        const a = arms[Q.k[p]], hot = a.hot || active === a.id ? 1.8 : 1;
+        Q.s[p] += Q.dir[p] * Q.v[p] * (Q.kind[p] ? 1 : hot) * dt / a.len;
+        if (Q.kind[p] === 0) { if (Q.s[p] > 1) Q.s[p] -= 1; else if (Q.s[p] < 0) Q.s[p] += 1; continue; }
+        if (Q.s[p] > 1.02) {
+          Q.on[p] = 0;
+          if (Q.kind[p] === 2) a.flashBad = 1; else a.flash = 1;
+        } else if (Q.s[p] < -0.02) { Q.on[p] = 0; coreFlash = 1; }
+      }
+      for (const a of arms) {
+        if (a.burst > 0) a.burst = Math.max(0, a.burst - dt * 1.2);
+        a.flash = Math.max(0, a.flash - dt * 1.6); a.flashBad = Math.max(0, a.flashBad - dt * 1.2);
+      }
+      // Radar: Blips, wenn der Strahl einen Arm überstreicht
+      const sw0 = (t - dt) * 0.8, sw1 = t * 0.8;
+      for (let k = 0; k < arms.length; k++) {
+        blips[k] = Math.max(0, blips[k] - dt * 0.8);
+        const d0 = ((arms[k].blipAng - sw0) % TAU + TAU) % TAU, d1 = ((arms[k].blipAng - sw1) % TAU + TAU) % TAU;
+        if (d1 > d0) blips[k] = 1;
+      }
+    }
+
+    // ---------- Zeichnen ----------
+    let calm = false;
+    function draw() {
+      calm = reduceMotion.matches;
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      const bt = ease(boot);
+      if (!moving && boot >= 1 && hazeA >= 1 && overlay && hazeC) {
+        if (!staticOk) composeStatic();
+        ctx.drawImage(staticC, 0, 0, W, H);
+        ctx.globalCompositeOperation = "lighter";
+      } else {
+        ctx.drawImage(bg, 0, 0, W, H);
+        ctx.globalCompositeOperation = "lighter";
+        if (overlay && !moving) { ctx.globalAlpha = bt; ctx.drawImage(overlay, 0, 0, W, H); ctx.globalAlpha = 1; }
+        else drawGuides(ctx, false);
+        if (hazeC && hazeA > 0.01) { ctx.globalAlpha = hazeA * bt; ctx.drawImage(hazeC, 0, 0, W, H); ctx.globalAlpha = 1; }
+      }
+      drawRings(bt);
+      drawSwirl(bt);
+      drawDust();
+      drawParticles();
+      drawOrbit();
+      drawArms(bt);
+      drawNodesFx(bt);
+      drawCore(bt);
+      drawTele();
+      if (hexC && (hexRoom.l || hexRoom.r)) drawHex();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+    function composeStatic() {
+      if (!staticC) staticC = document.createElement("canvas");
+      staticC.width = bg.width; staticC.height = bg.height;
+      const g = staticC.getContext("2d");
+      g.drawImage(bg, 0, 0);
+      g.globalCompositeOperation = "lighter";
+      g.drawImage(overlay, 0, 0, staticC.width, staticC.height);
+      g.drawImage(hazeC, 0, 0, staticC.width, staticC.height);
+      staticOk = true;
+    }
+    function drawRings(bt) {
+      const { cx, cy, R } = cur;
+      // Gradskala am inneren Führungsring (dreht langsam)
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(-rot * 0.08);
+      ctx.beginPath();
+      for (let i = 0; i < 72; i++) {
+        const a = i * TAU / 72, r1 = R * 2.3, r2 = R * (i % 18 === 0 ? 2.44 : i % 2 ? 2.34 : 2.37);
+        ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+      }
+      ctx.lineWidth = 1; ctx.strokeStyle = S(0.3 * bt); ctx.stroke();
+      ctx.restore();
+      if (calm) return;   // reduzierte Bewegung: kein Radarstrahl im Standbild
+      // Radar: Strahl mit Nachleuchten zwischen 2,3 R und 3,25 R
+      const sw = t * 0.8;
+      // Nachleuchten mit radialem Verlauf (weiche Innen-/Außenkante); Verlauf nur bei neuer Kernlage neu erzeugen
+      if (!radarG || radarK[0] !== cx || radarK[1] !== cy || radarK[2] !== R) {
+        radarG = ctx.createRadialGradient(cx, cy, R * 2.3, cx, cy, R * 3.25);
+        radarG.addColorStop(0, `rgba(${accent},0)`); radarG.addColorStop(0.35, `rgba(${accent},0.09)`);
+        radarG.addColorStop(0.7, `rgba(${accent},0.05)`); radarG.addColorStop(1, `rgba(${accent},0)`);
+        radarK[0] = cx; radarK[1] = cy; radarK[2] = R;
+      }
+      ctx.fillStyle = radarG;
+      for (let k = 0; k < 12; k++) {
+        const a0 = sw - (k + 1) * 0.045, a1 = sw - k * 0.045, f = 1 - k / 12;
+        ctx.beginPath();
+        ctx.arc(cx, cy, R * 3.25, a0, a1);
+        ctx.arc(cx, cy, R * 2.3, a1, a0, true);
+        ctx.closePath();
+        ctx.globalAlpha = f * f * bt; ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(sw) * R * 2.36, cy + Math.sin(sw) * R * 2.36); ctx.lineTo(cx + Math.cos(sw) * R * 3.2, cy + Math.sin(sw) * R * 3.2);
+      ctx.lineWidth = 1.2; ctx.strokeStyle = S(0.5 * bt); ctx.stroke();
+      for (let k = 0; k < arms.length; k++) {
+        const b = blips[k];
+        if (b <= 0.02 || !arms[k].ok) continue;
+        const [x, y] = arms[k].blip;
+        ctx.globalAlpha = b;
+        ctx.beginPath(); ctx.arc(x, y, 3 + (1 - b) * 9, 0, TAU); ctx.lineWidth = 1; ctx.strokeStyle = Wt(0.8); ctx.stroke();
+        ctx.fillStyle = WHT[20]; ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function drawSwirl(bt) {
+      if (!swirlC) return;
+      const { cx, cy, R } = cur;
+      const hs = swirlC.width / 0.5 * (R / swirlR);
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(emit);
+      ctx.globalAlpha = 0.62 * bt; ctx.drawImage(swirlC, -hs / 2, -hs / 2, hs, hs);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+    function drawDust() {
+      ctx.fillStyle = S(1);
+      for (let i = 0; i < nD; i++) {
+        ctx.globalAlpha = D.a[i] * (0.55 + 0.45 * Math.sin(t * D.f[i] + D.ph[i]));
+        ctx.fillRect(D.x[i], D.y[i], D.sz[i], D.sz[i]);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // 3 Farben (Cyan, Weiß, LED-Farbe) × 4 Helligkeitsstufen = 12 gebündelte Pfade für Schweife und Köpfe
+    function drawParticles() {
+      const { cx, cy, R } = cur;
+      const TAIL = 0.13;
+      for (let i = 0; i < N; i++) {
+        let x, y, a;
+        if (P.mode[i] === 0) {
+          const ar = arms[P.k[i]];
+          if (!ar.ok) { P.b[i] = 255; continue; }
+          const s = P.s[i], off = P.g[i] * armWidth(s), ds = P.sp[i] * TAIL / ar.len;
+          armPoint(ar, s, off); x = PX; y = PY;
+          armPoint(ar, s + ds * 0.5, P.g[i] * armWidth(s + ds * 0.5)); P.x1[i] = PX; P.y1[i] = PY;
+          armPoint(ar, s + ds, P.g[i] * armWidth(s + ds)); P.x2[i] = PX; P.y2[i] = PY;
+          a = P.a[i] * Math.min(1, P.age[i] / 0.5) * Math.min(1, (1 - s) * 14) * (0.62 + 0.38 * (1 - s));
+        } else {
+          const r = P.r[i] * R, th = P.th[i];
+          x = cx + Math.cos(th) * r; y = cy + Math.sin(th) * r;
+          const th1 = th - P.om[i] * TAIL * 0.8, r1 = (P.r[i] + P.dr[i] * TAIL * 0.8) * R;
+          const th2 = th - P.om[i] * TAIL * 1.6, r2 = (P.r[i] + P.dr[i] * TAIL * 1.6) * R;
+          P.x1[i] = cx + Math.cos(th1) * r1; P.y1[i] = cy + Math.sin(th1) * r1;
+          P.x2[i] = cx + Math.cos(th2) * r2; P.y2[i] = cy + Math.sin(th2) * r2;
+          const inner = clamp((3.3 - P.r[i]) / (3.3 - V_IN), 0, 1);
+          a = P.a[i] * Math.min(1, P.age[i] / 0.7) * clamp((P.r[i] - V_IN) / 0.3, 0, 1) * (0.45 + 0.55 * inner);
+        }
+        P.x[i] = x; P.y[i] = y; P.fa[i] = a;
+        if (a < 0.04) { P.b[i] = 255; continue; }
+        const col = P.c[i] === 2 && !TSTY ? 0 : P.c[i];
+        P.b[i] = col * 4 + Math.min(3, (a * 4) | 0);
+      }
+      ctx.lineWidth = 1.1; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      for (let b = 0; b < 12; b++) {
+        const col = (b / 4) | 0, lvl = b % 4;
+        if (col === 2 && !TSTY) continue;
+        let any = false;
+        ctx.beginPath();
+        for (let i = 0; i < N; i++) {
+          if (P.b[i] !== b) continue;
+          ctx.moveTo(P.x2[i], P.y2[i]); ctx.lineTo(P.x1[i], P.y1[i]); ctx.lineTo(P.x[i], P.y[i]);
+          any = true;
+        }
+        if (!any) continue;
+        const al = (lvl + 1) * 0.16;
+        ctx.strokeStyle = col === 0 ? S(al) : col === 1 ? Wt(al * 0.9) : TSTY[clamp(Math.round(al * 20), 0, 20)];
+        ctx.stroke();
+        // Punkt-Köpfe derselben Stufe
+        ctx.beginPath();
+        for (let i = 0; i < N; i++) {
+          if (P.b[i] !== b) continue;
+          const s = P.sz[i];
+          ctx.rect(P.x[i] - s / 2, P.y[i] - s / 2, s, s);
+        }
+        const ah = 0.4 + lvl * 0.2;
+        ctx.fillStyle = col === 0 ? S(ah) : col === 1 ? Wt(ah) : TSTY[clamp(Math.round(ah * 20), 0, 20)];
+        ctx.fill();
+      }
+      // große Partikel mit Leuchthof
+      for (let i = 0; i < N; i++) {
+        if (P.b[i] === 255 || P.sz[i] < 2.2) continue;
+        ctx.globalAlpha = P.fa[i] * 0.75;
+        ctx.drawImage(P.c[i] === 2 && tint.licht ? tint.licht : P.c[i] === 1 ? glowW : glow, P.x[i] - 8, P.y[i] - 8, 16, 16);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function drawOrbit() {
+      const { cx, cy, R } = cur;
+      ctx.beginPath();
+      for (let i = 0; i < nO; i++) {
+        const r = R * O.r[i];
+        ctx.moveTo(cx + Math.cos(O.ang[i] - O.len[i]) * r, cy + Math.sin(O.ang[i] - O.len[i]) * r);
+        ctx.arc(cx, cy, r, O.ang[i] - O.len[i], O.ang[i]);
+      }
+      ctx.lineWidth = 1.2; ctx.strokeStyle = S(0.42); ctx.stroke();
+      ctx.fillStyle = WHT[20];
+      for (let i = 0; i < nO; i++) {
+        ctx.globalAlpha = O.a[i];
+        const r = R * O.r[i];
+        ctx.fillRect(cx + Math.cos(O.ang[i]) * r - 1, cy + Math.sin(O.ang[i]) * r - 1, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function drawArms(bt) {
+      for (let k = 0; k < arms.length; k++) {
+        const a = arms[k];
+        if (!a.ok) continue;
+        const hot = a.hot || active === a.id;
+        const e = Math.max(hot ? 1 : 0, a.burst);
+        const L = a.lut;
+        ctx.beginPath();
+        ctx.moveTo(L[0], L[1]);
+        for (let i = 1; i <= SEG; i++) ctx.lineTo(L[i * 2], L[i * 2 + 1]);
+        ctx.lineCap = "round"; ctx.lineJoin = "round";
+        if (e > 0.02) { ctx.lineWidth = 8; ctx.strokeStyle = S(0.08 * e * bt); ctx.stroke(); }
+        ctx.lineWidth = 1.2; ctx.strokeStyle = S((0.42 + e * 0.5) * bt); ctx.stroke();
+        ctx.setLineDash([2, 8]); ctx.lineDashOffset = t * (hot ? 44 : 22);     // Striche fließen zum Kern
+        ctx.lineWidth = 2.6; ctx.strokeStyle = S((0.14 + e * 0.3) * bt); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = S(0.9 * bt);
+        ctx.fillRect(L[SEG * 2] - 1.5, L[SEG * 2 + 1] - 1.5, 3, 3);
+      }
+      // Lichtpulse (im ruhigen Standbild weggelassen)
+      for (let p = 0; p < PM; p++) {
+        if (!Q.on[p] || calm) continue;
+        const a = arms[Q.k[p]], kd = Q.kind[p], s = Q.s[p];
+        if (!a.ok) continue;
+        const fade = kd ? 1 : Math.min(1, s * 8, (1 - s) * 8);
+        if (fade <= 0) continue;
+        const isTint = Q.k[p] === 0 && tint.licht;
+        armPoint(a, s, 0); const x = PX, y = PY;
+        armPoint(a, s - Q.dir[p] * (kd ? 0.09 : 0.06), 0);
+        ctx.globalAlpha = fade * bt;
+        ctx.lineWidth = kd ? 2.4 : 1.7;
+        ctx.strokeStyle = kd === 2 ? RED[18] : kd ? WHT[16] : isTint ? TSTY[16] : S(0.75);
+        ctx.beginPath(); ctx.moveTo(PX, PY); ctx.lineTo(x, y); ctx.stroke();
+        const gs = kd ? 28 : 18;
+        ctx.drawImage(kd === 2 ? glowRed : isTint ? tint.licht : glow, x - gs / 2, y - gs / 2, gs, gs);
+        ctx.fillStyle = kd === 2 ? RED[20] : WHT[20];
+        ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
+      }
+      ctx.globalAlpha = 1;
+    }
+    function drawNodesFx(bt) {
+      for (let n = 0; n < IDS.length; n++) {
+        const id = IDS[n], a = arms[n], nd = cur.n[id];
+        if (!nd) continue;
+        const hot = a.hot || active === id;
+        const e = Math.max(hot ? 1 : 0, a.burst);
+        const RR = ringR(id);
+        ctx.globalAlpha = (0.26 + e * 0.32 + a.flash * 0.5) * bt;
+        const gs = RR * 3.4;
+        ctx.drawImage(tint[id] || glow, nd.x - gs / 2, nd.y - gs / 2, gs, gs);
+        if (a.flashBad > 0) { ctx.globalAlpha = a.flashBad * 0.9; ctx.drawImage(glowRed, nd.x - gs / 2, nd.y - gs / 2, gs, gs); }
+        ctx.globalAlpha = bt;
+        ctx.lineWidth = 1.4; ctx.strokeStyle = S(0.55 + e * 0.4);
+        const sp = rot * (n % 2 ? -1.6 : 1.6);
+        ctx.beginPath();
+        ctx.arc(nd.x, nd.y, RR + 9, sp, sp + 0.7);
+        ctx.moveTo(nd.x + Math.cos(sp + Math.PI) * (RR + 9), nd.y + Math.sin(sp + Math.PI) * (RR + 9));
+        ctx.arc(nd.x, nd.y, RR + 9, sp + Math.PI, sp + Math.PI + 0.35);
+        ctx.stroke();
+        // Rückmeldung am Knoten: Ring läuft aus (weiß = ok, rot = Fehler)
+        const fl = calm ? 0 : Math.max(a.flash, a.flashBad);
+        if (fl > 0) {
+          ctx.globalAlpha = fl * 0.8;
+          ctx.strokeStyle = a.flashBad > a.flash ? RED[20] : WHT[16];
+          ctx.beginPath(); ctx.arc(nd.x, nd.y, RR + 4 + (1 - fl) * 10, 0, TAU); ctx.stroke();
+        }
+        // Zielerfassung am aktiven Knoten: Klammern seitlich am Ring (senkrechte Knoten) bzw. oben/unten
+        // (waagerechte Knoten) – nie über der Beschriftung
+        if (active === id) {
+          const horiz = nd.kind === "hl" || nd.kind === "hr";
+          const q = RR + 13 + Math.sin(t * 4) * 1.5, h = RR * 0.72, L = 7;
+          ctx.globalAlpha = 0.95 * bt; ctx.lineWidth = 1.8; ctx.strokeStyle = WHT[18];
+          ctx.beginPath();
+          for (let sg = -1; sg <= 1; sg += 2) {
+            if (horiz) {
+              const y = nd.y + sg * q;
+              ctx.moveTo(nd.x - h, y - sg * L); ctx.lineTo(nd.x - h, y); ctx.lineTo(nd.x + h, y); ctx.lineTo(nd.x + h, y - sg * L);
+            } else {
+              const x = nd.x + sg * q;
+              ctx.moveTo(x - sg * L, nd.y - h); ctx.lineTo(x, nd.y - h); ctx.lineTo(x, nd.y + h); ctx.lineTo(x - sg * L, nd.y + h);
+            }
+          }
+          ctx.stroke();
+          ctx.fillStyle = WHT[20];
+          for (let sg = -1; sg <= 1; sg += 2) {
+            if (horiz) ctx.fillRect(nd.x - 1.5, nd.y + sg * q - 1.5, 3, 3); else ctx.fillRect(nd.x + sg * q - 1.5, nd.y - 1.5, 3, 3);
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+    function drawCore(bt) {
+      const { cx, cy } = cur;
+      const R = cur.R * (0.55 + 0.45 * bt);
+      const pulse = 0.86 + 0.14 * Math.sin(t * 2.2) + (spinBoost - 1) * 0.08 + coreFlash * 0.25;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.globalAlpha = bt;
+      // Skalenring
+      ctx.save(); ctx.rotate(-rot * 0.35);
+      ctx.beginPath();
+      for (let i = 0; i < 72; i++) {
+        const a = i * TAU / 72, r1 = R * (i % 6 === 0 ? 1.38 : 1.43), r2 = R * 1.5;
+        ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+      }
+      ctx.lineWidth = 1; ctx.strokeStyle = S(0.5); ctx.stroke();
+      ctx.restore();
+      // Abtaster
+      const sw = t * 1.1 * spinBoost;
+      for (let k = 0; k < 6; k++) {
+        ctx.beginPath(); ctx.arc(0, 0, R * 1.6, sw - k * 0.09 - 0.09, sw - k * 0.09);
+        ctx.lineWidth = 2; ctx.strokeStyle = S(0.7 - k * 0.11); ctx.stroke();
+      }
+      // Segmentring
+      ctx.save(); ctx.rotate(rot * 1.4);
+      ctx.beginPath();
+      for (let k = 0; k < 3; k++) { const a0 = k * TAU / 3; ctx.moveTo(Math.cos(a0) * R * 1.27, Math.sin(a0) * R * 1.27); ctx.arc(0, 0, R * 1.27, a0, a0 + 1.5); }
+      ctx.lineWidth = 2.6; ctx.strokeStyle = S(0.78); ctx.stroke();
+      ctx.restore();
+      ctx.lineWidth = 1; ctx.strokeStyle = S(0.3);
+      ctx.beginPath(); ctx.arc(0, 0, R * 1.18, 0, TAU); ctx.stroke();
+      ctx.setLineDash([1.5, 4.5]); ctx.lineDashOffset = -t * 10;
+      ctx.strokeStyle = S(0.6); ctx.beginPath(); ctx.arc(0, 0, R * 1.08, 0, TAU); ctx.stroke();
+      ctx.setLineDash([]);
+      // Reaktor-Spulen
+      ctx.save(); ctx.rotate(rot * 0.5);
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = i * TAU / 10, w = 0.2, r1 = R * 0.62, r2 = R * 0.94;
+        ctx.moveTo(Math.cos(a - w) * r1, Math.sin(a - w) * r1);
+        ctx.lineTo(Math.cos(a - w * 0.78) * r2, Math.sin(a - w * 0.78) * r2);
+        ctx.lineTo(Math.cos(a + w * 0.78) * r2, Math.sin(a + w * 0.78) * r2);
+        ctx.lineTo(Math.cos(a + w) * r1, Math.sin(a + w) * r1);
+        ctx.closePath();
+      }
+      ctx.fillStyle = S(0.2 * pulse); ctx.fill();
+      ctx.lineWidth = 1.1; ctx.strokeStyle = S(0.85); ctx.stroke();
+      ctx.restore();
+      ctx.lineWidth = 1; ctx.strokeStyle = S(0.55);
+      ctx.beginPath(); ctx.arc(0, 0, R * 0.98, 0, TAU); ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = S(0.95);
+      ctx.beginPath(); ctx.arc(0, 0, R * 0.56, 0, TAU); ctx.stroke();
+      // Dreieck im Kern
+      ctx.save(); ctx.rotate(-rot * 0.7);
+      ctx.beginPath();
+      for (let k = 0; k < 3; k++) { const a = k * TAU / 3 - Math.PI / 2; ctx[k ? "lineTo" : "moveTo"](Math.cos(a) * R * 0.44, Math.sin(a) * R * 0.44); }
+      ctx.closePath(); ctx.lineWidth = 1.4; ctx.strokeStyle = S(0.7); ctx.stroke();
+      ctx.restore();
+      const cs = R * 1.15 * pulse;
+      ctx.globalAlpha = Math.min(1, pulse) * bt;
+      ctx.drawImage(coreSpr, -cs / 2, -cs / 2, cs, cs);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+    function drawTele() {
+      if (!teleBox) return;
+      const { x, y } = teleBox;
+      if (teleNarrow !== teleBox.narrow) { teleNarrow = teleBox.narrow; teleText(); }
+      ctx.font = F95; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.globalAlpha = ease(boot);
+      ctx.fillStyle = S(0.66);
+      ctx.fillText(teleL[0], x, y);
+      ctx.fillStyle = S(0.45);
+      ctx.fillText(teleL[1], x, y + 13);
+      if (tele.clock) ctx.fillText(tele.clock, x, y + 26);
+      ctx.fillRect(x - 20, y - 10, 40, 1);
+      ctx.globalAlpha = 1;
+    }
+    function drawHex() {
+      const lines = hexC.height / DPR / 2, off = (t * 12) % lines;
+      const h = hexC.height / DPR;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, hexY[0], W, hexY[1] - hexY[0]); ctx.clip();   // nur zwischen Kopf- und Befehlsleiste
+      ctx.globalAlpha = 0.9 * ease(boot);
+      if (hexRoom.l) ctx.drawImage(hexC, 0, 0, hexC.width, hexC.height, 6 + safe.l, -off - 40, 64, h);
+      if (hexRoom.r) ctx.drawImage(hexC, 0, 0, hexC.width, hexC.height, W - 70 - safe.r, -((off * 0.7 + lines / 3) % lines) - 40, 64, h);
+      ctx.restore();
+    }
+
+    // Qualitäts-Regler: bleibt die Bildzeit dauerhaft über ~26 ms, Canvas-Auflösung schrittweise senken.
+    let perfN = 0, perfSum = 0;
+    function governor(raw) {
+      if (raw <= 0 || raw > 0.1 || maxDpr <= 1) return;
+      perfSum += raw;
+      if (++perfN < 120) return;
+      const avg = perfSum / perfN;
+      perfN = perfSum = 0;
+      if (avg > 0.026 && Math.min(window.devicePixelRatio || 1, maxDpr) > 1) { maxDpr = Math.max(1, maxDpr - 0.5); resize(); }
+    }
+    function frame(now) {
+      raf = 0;
+      if (document.hidden) return;
+      // Nächstes Bild zuerst anmelden: ein kick() während dieses Bildes startet so keine zweite Schleife.
+      if (!reduceMotion.matches) raf = requestAnimationFrame(frame);
+      const raw = (now - last) / 1000;
+      const dt = Math.min(raw, 0.05) || 0.016;
+      last = now;
+      if (reduceMotion.matches) { boot = 1; if (moving) settle(); }
+      else { governor(raw); step(dt); }
+      draw();
+    }
+    function kick() {
+      if (!raf && !document.hidden && W) { last = performance.now(); raf = requestAnimationFrame(frame); }
+    }
+
+    // ---------- Öffentliche Schnittstelle ----------
+    let resizeQueued = false;
+    window.addEventListener("resize", () => {
+      if (resizeQueued) return;
+      resizeQueued = true;
+      requestAnimationFrame(() => { resizeQueued = false; resize(); });
+    });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) kick(); });
+    reduceMotion.addEventListener?.("change", () => { if (reduceMotion.matches) { boot = 1; settle(); } kick(); });
+    for (let k = 0; k < IDS.length; k++) {
+      const b = nodeEl[IDS[k]];
+      const hot = (v) => () => { arms[k].hot = v; kick(); };
+      b.addEventListener("pointerenter", hot(true)); b.addEventListener("pointerleave", hot(false));
+      b.addEventListener("focus", hot(true)); b.addEventListener("blur", hot(false));
+    }
+
+    styles(); sprites();
+    if (reduceMotion.matches) boot = 1;
+    return {
+      start() { resize(); },
+      setPanel(id) { active = IDS.includes(id) ? id : null; panelOpen = !!id; layout(); },
+      // kind: "req" (Knoten → Kern), "ok" (Kern → Knoten), "err" (rot)
+      pulse(id, kindName) {
+        const k = IDS.indexOf(id);
+        if (k < 0) return;
+        if (kindName === "req") addPulse(k, 3, -1, 280, 1);
+        else for (let i = 0; i < 3; i++) addPulse(k, kindName === "err" ? 2 : 1, 1, 320 + Math.random() * 70, -i * 0.08);
+        arms[k].burst = 1;
+        kick();
+      },
+      setTint(id, rgb) {
+        const key = rgb ? rgb.join(",") : "";
+        if ((tintKey[id] || "") === key) return;     // gleiche Farbe → Sprite nicht neu erzeugen
+        tintKey[id] = key;
+        tint[id] = rgb ? glowOf(key) : null;
+        if (id === "licht") {
+          const next = rgb ? rgb.join(",") : null;
+          if (next !== tintRgb) {
+            tintRgb = next; setTintStyles();
+            if (P) for (let i = 0; i < N; i++) { if (P.c[i] === 2 && !tintRgb) P.c[i] = 0; else if (tintRgb && P.mode[i] === 0 && P.k[i] === 0 && P.c[i] === 0 && Math.random() < 0.7) P.c[i] = 2; }
+          }
+        }
+        redraw();
+      },
+      setAlert(on) {
+        const next = on ? "255,93,108" : "59,227,255";
+        tele.core = on ? "OFFLINE" : "ONLINE"; teleText();
+        document.body.classList.toggle("alert", on);
+        if (next === accent) return;
+        accent = next; styles(); sprites(); radarG = null;
+        if (W) { buildBg(); buildHex(); if (!moving) { buildOverlay(); buildHaze(); } buildSwirl(cur.R); }
+        redraw();
+      },
+      setBusy(v) { busy = v; kick(); },
+      setTele(key, val) { tele[key] = val; teleText(); },
+      redraw,
+      onLayout(cb) { layoutCbs.push(cb); },
+      geom() { return { mode, kind, sheetTop, centerBox, cmdBox, cx: tgt.cx, cy: tgt.cy, nodes: tgt.n, dockW }; },
+    };
+    function redraw() { if (reduceMotion.matches && W) draw(); else kick(); }
+  })();
+
+  // Knoten-Inhalt (Hexagon, Ringe, Symbol) einsetzen
+  const ICONS = {
+    licht: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z",
+    klima: "M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0zM12 9v7M17 6h3M17 10h2",
+    skripte: "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M12.5 15h4",
+    pc: "M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0",
+    system: "M8 8h8v8H8zM10.5 10.5h3v3h-3zM4 10h4M4 14h4M16 10h4M16 14h4M10 4v4M14 4v4M10 16v4M14 16v4",
+  };
+  for (const b of document.querySelectorAll(".node")) {
+    const ring = document.createElement("span");
+    ring.className = "ring";
+    ring.setAttribute("aria-hidden", "true");
+    ring.innerHTML =
+      '<svg class="spin" viewBox="0 0 100 100"><circle class="dash" cx="50" cy="50" r="47"/>' +
+      '<circle class="arc" cx="50" cy="50" r="47"/><circle class="arc2" cx="50" cy="50" r="47"/></svg>' +
+      '<svg class="hex" viewBox="0 0 100 100"><polygon class="o" points="50,9 85.5,29.5 85.5,70.5 50,91 14.5,70.5 14.5,29.5"/>' +
+      '<polygon class="i" points="50,18 77.7,34 77.7,66 50,82 22.3,66 22.3,34"/></svg>' +
+      '<svg class="ico" viewBox="0 0 24 24"><path d="' + ICONS[b.dataset.icon] + '"/></svg><span class="led"></span>';
+    b.prepend(ring);
+  }
+  document.querySelectorAll(".node").forEach((n, i) => { n.style.transitionDelay = (0.25 + i * 0.1) + "s"; });
+
+  // Live-Anzeige am Knoten (Wert + Unterzeile + Status-LED)
+  const known = {};
+  function setNode(id, main, sub = "", state = "") {
+    known[id] = main !== "–";
+    $("nv-" + id).textContent = main;
+    $("ns-" + id).textContent = sub;
+    $("n-" + id).dataset.state = state;
+  }
+  // Fehlertexte an Wortgrenzen kürzen, nie mitten im Wort
+  function shorten(text, max) {
+    const s = String(text || "");
+    if (s.length <= max) return s;
+    const cut = s.slice(0, max - 1), sp = cut.lastIndexOf(" ");
+    return (sp > max * 0.5 ? cut.slice(0, sp) : cut).replace(/[\s,;:.–-]+$/, "") + " …";
+  }
+  // Warum fehlen Daten? → kurzer Grund für die Knoten-Unterzeile
+  function whyShort(e) {
+    if (!e) return "Fehler";
+    if (e.status === 429) return "gesperrt";
+    if (!e.status) return "nicht erreichbar";
+    if (/nicht eingerichtet/i.test(e.message)) return "nicht eingerichtet";
+    if (/nicht erreichbar|Timeout|antwortet nicht/i.test(e.message)) return "nicht erreichbar";
+    return "Fehler";
+  }
+
+  // =====================================================================
+  //  Hilfen + API (wie bisherige Oberfläche)
+  // =====================================================================
+  let toastTimer;
+  function toast(text, bad = false, ms = 0) {
+    const t = $("toast");
+    t.textContent = text;
+    t.className = "toast show" + (bad ? " bad" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = "toast" + (bad ? " bad" : ""); }, ms || (bad ? 5000 : 2500));
+    // Ein offener Modal-Dialog liegt über dem Toast → Fehler (z. B. Sperre) zusätzlich im Token-Dialog zeigen
+    if (bad && $("token-dialog").open) showTokenError(text);
+  }
+  function showTokenError(text) {
+    const e = $("token-err");
+    e.textContent = text || "";
+    e.hidden = !text;
+  }
+
+  function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "class") node.className = v;
+      else if (k === "text") node.textContent = v;
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
+    }
+    for (const c of children) if (c != null) node.append(c);
+    return node;
+  }
+
+  function askToken(reason = "") {
+    const d = $("token-dialog");
+    if (!d.open) { $("token-input").value = ""; showTokenError(reason); d.showModal(); }
+    else if (reason) showTokenError(reason);
+  }
+  function httpError(msg, status) {
+    const e = new Error(msg);
+    e.status = status;
+    return e;
+  }
+
+  async function api(path, body, method = "POST") {
+    if (!token) { askToken(); throw new Error("Kein Token"); }
+    const opts = { method, headers: { "Authorization": "Bearer " + token } };
+    if (body instanceof FormData) {
+      opts.body = body;   // multipart: Content-Type samt Boundary setzt der Browser
+    } else if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    let res;
+    try {
+      res = await fetch(path, opts);
+    } catch {
+      setPill("st-server", "bad", "Server offline");
+      throw httpError("Server nicht erreichbar", 0);
+    }
+    setPill("st-server", "ok", "Server");
+    let data = {};
+    try { data = await res.json(); } catch { /* leer */ }
+    if (res.status === 401) {
+      token = null; store.del(TOKEN_KEY); askToken("Token ungültig. Bitte erneut eingeben.");
+      throw httpError("Token ungültig", 401);
+    }
+    if (!res.ok) {
+      const msg = data.error || (typeof data.detail === "string" ? data.detail : null) || ("HTTP " + res.status);
+      throw httpError(msg, res.status);
+    }
+    return data;
+  }
+
+  // Jeder Tool-Aufruf ist im HUD sichtbar: Puls Knoten → Kern beim Senden, Kern → Knoten bei Erfolg, rot bei Fehler.
+  async function tool(name, args = {}) {
+    const node = NODE_OF(name);
+    hud.pulse(node, "req");
+    let data;
+    try {
+      data = await api("/api/tools/" + encodeURIComponent(name), args);
+    } catch (e) {
+      if (e.message !== "Kein Token") hud.pulse(node, "err");
+      throw e;
+    }
+    hud.pulse(node, "ok");
+    const result = data.result || {};
+    if (result.status === "confirm_required") openConfirm(result);
+    return result;
+  }
+
+  // Knopf während der Aktion als beschäftigt markieren (statt disabled → Fokus bleibt erhalten, kein Doppelklick)
+  const isBusy = (b) => !!b && b.getAttribute("aria-busy") === "true";
+  async function guarded(button, fn) {
+    if (isBusy(button)) return;
+    if (button) button.setAttribute("aria-busy", "true");
+    try { return await fn(); }
+    catch (e) { if (e.message !== "Kein Token") toast(e.message, true); }
+    finally { if (button) button.removeAttribute("aria-busy"); }
+  }
+
+  // ---------- Status ----------
+  const sys = { server: "", serverCls: "", llm: "", llmCls: "", model: "" };
+  function setPill(id, cls, text) {
+    const p = $(id);
+    p.className = "pill " + cls;
+    p.textContent = text;
+    if (id === "st-server") {
+      if (sys.serverCls === cls && sys.server === text) return;
+      sys.server = text; sys.serverCls = cls;
+      hud.setAlert(cls === "bad");
+      $("sys-server").textContent = cls === "ok" ? "erreichbar" : text;
+      if (!pcTimer) showPcIdle();
+    } else {
+      sys.llm = text; sys.llmCls = cls;
+      $("sys-llm").textContent = text;
+      $("cmd-src").textContent = cls === "ok" ? "LLM" : "Regeln";
+    }
+    if (sys.serverCls === "bad") setNode("system", "OFFLINE", "keine Verbindung", "bad");
+    else if (sys.llmCls === "ok") setNode("system", "LLM AKTIV", sys.model, "on");
+    else if (sys.llmCls === "warn") setNode("system", "REGELN", "Regel-Parser", "warn");
+    else if (sys.llmCls === "bad") setNode("system", { "LLM offline": "LLM OFFLINE", "Modell fehlt": "KEIN MODELL", "Modell ohne Tools": "OHNE TOOLS" }[sys.llm] || "LLM FEHLER", "Regel-Parser aktiv", "bad");
+    else setNode("system", sys.serverCls === "ok" ? "ONLINE" : "–", sys.serverCls === "ok" ? "Server ok" : "", sys.serverCls === "ok" ? "on" : "");
+  }
+
+  // Ergebnis: "ok" | "offline" | "auth" | "locked" | "error"; Fehlertext steht danach in statusError.
+  let statusError = "";
+  async function refreshStatus() {
+    statusError = "";
+    try {
+      const t0 = performance.now();
+      const h = await fetch("/api/health", { cache: "no-store" });
+      const ms = Math.round(performance.now() - t0);
+      hud.setTele("lat", ms + " ms");
+      $("sys-lat").textContent = ms + " ms";
+      setPill("st-server", h.ok ? "ok" : "bad", h.ok ? "Server" : "Server-Fehler");
+    } catch {
+      setPill("st-server", "bad", "Server offline");
+      statusError = "Server nicht erreichbar";
+      return "offline";
+    }
+    if (!token) return "auth";
+    try {
+      const s = await api("/api/status", undefined, "GET");
+      const l = s.llm || {};
+      sys.model = l.model || "";
+      $("sys-model").textContent = l.model || "–";
+      $("sys-note").textContent = l.note || l.error || "–";
+      if (!l.enabled) setPill("st-llm", "warn", "LLM aus · Regeln");
+      else if (!l.reachable) setPill("st-llm", "bad", "LLM offline");
+      else if (l.model_installed === false) setPill("st-llm", "bad", "Modell fehlt");
+      else if (l.tools_supported === false) setPill("st-llm", "bad", "Modell ohne Tools");
+      else setPill("st-llm", "ok", "LLM " + (l.model || ""));
+      return "ok";
+    } catch (e) {
+      statusError = e.message;
+      if (!token) return "auth";
+      return e.status === 429 ? "locked" : e.status ? "error" : "offline";
+    }
+  }
+  $("sys-refresh").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
+    const st = await refreshStatus();
+    if (st === "ok") { if (!loaded) loadAll(); else { loadVoice(); loadVision(); } toast("Status aktualisiert."); }
+    else if (st !== "auth") toast(statusError, true);
+  }));
+
+  // =====================================================================
+  //  Licht
+  // =====================================================================
+  const bri = $("bri");
+  let briHeld = false;   // Regler wird gerade gezogen
+  function setBri(v) {
+    bri.value = v;
+    bri.style.setProperty("--p", v + "%");
+    $("bri-val").textContent = v + " %";
+  }
+  function showLed(r) {
+    if (!r || r.on === undefined) return;
+    const pct = r.brightness_percent;
+    $("led-state").textContent = r.on ? "an · " + pct + " %" : "aus";
+    $("led-big").textContent = r.on ? pct + " %" : "AUS";
+    if (typeof pct === "number" && !briHeld) setBri(r.on ? pct : 0);   // nie unter dem Finger verschieben
+    $("led-on").classList.toggle("sel", !!r.on); $("led-on").setAttribute("aria-pressed", String(!!r.on));
+    $("led-off").classList.toggle("sel", !r.on); $("led-off").setAttribute("aria-pressed", String(!r.on));
+    const rgb = Array.isArray(r.color) ? r.color.slice(0, 3) : null;
+    const css = rgb ? "rgb(" + rgb.join(",") + ")" : "";
+    $("led-now").style.background = r.on && css ? css : "#1b2b33";
+    $("led-now").style.boxShadow = r.on && css ? "0 0 0 2px #02101a, 0 0 0 3px rgba(59,227,255,.5), 0 0 18px " + css : "";
+    const hex = rgb ? "#" + rgb.map((v) => Number(v).toString(16).padStart(2, "0")).join("") : "";
+    for (const s of $("swatches").querySelectorAll(".swatch[data-hex]")) s.setAttribute("aria-pressed", String(!!r.on && s.dataset.hex === hex));
+    $("color-name").textContent = r.on && rgb ? colorName(hex) : "";
+    const node = $("n-licht");
+    if (r.on && css) node.style.setProperty("--led", css); else node.style.removeProperty("--led");
+    setNode("licht", r.on ? "AN · " + pct + " %" : "AUS", r.on && rgb ? colorName(hex) : "", r.on ? "on" : "");
+    hud.setTint("licht", r.on && rgb && rgb.some((v) => v > 30) ? rgb : null);
+  }
+  function colorName(hex) {
+    const hit = COLORS.find(([, h]) => h === hex);
+    return hit ? hit[0] : hex;
+  }
+  // Stilles Lesen beim Start: kein Fehler-Toast, die Meldung erscheint als Zustandstext
+  function ledUnavailable(e) {
+    if (e.message === "Kein Token") return;
+    $("led-state").textContent = e.message;
+    $("led-state").title = e.message;
+    $("led-big").textContent = "–";
+    setNode("licht", "–", whyShort(e), "warn");
+  }
+
+  document.querySelectorAll("[data-tool]").forEach((b) => {
+    b.addEventListener("click", () => guarded(b, async () => {
+      const r = await tool(b.dataset.tool, JSON.parse(b.dataset.args || "{}"));
+      if (b.dataset.tool.startsWith("led_")) showLed(r);
+      if (b.dataset.tool === "pc_shutdown_cancel") showPcIdle(true);
+      if (r.message) toast(r.message);
+    }));
+  });
+
+  $("led-refresh").addEventListener("click", (e) => guarded(e.currentTarget, async () => showLed(await tool("led_status"))));
+
+  bri.addEventListener("input", () => setBri(bri.value));
+  bri.addEventListener("pointerdown", () => { briHeld = true; });
+  for (const ev of ["pointerup", "pointercancel"]) window.addEventListener(ev, () => { briHeld = false; });
+  bri.addEventListener("change", () => guarded(null, async () => showLed(await tool("led_brightness", { percent: Number(bri.value) }))));
+
+  const sw = $("swatches");
+  for (const [name, hex] of COLORS) {
+    sw.append(el("button", {
+      type: "button", class: "swatch", title: name, "aria-label": "Farbe " + name, "aria-pressed": "false",
+      "data-hex": hex, style: "background:" + hex,
+      onclick: (e) => guarded(e.currentTarget, async () => showLed(await tool("led_color", { color: name }))),
+    }));
+  }
+  const picker = el("input", { type: "color", value: "#3be3ff", "aria-label": "Eigene Farbe" });
+  const pickerBox = el("label", { class: "swatch picker", title: "Eigene Farbe" }, picker, el("span", { class: "pk", "aria-hidden": "true" }));
+  picker.addEventListener("input", () => pickerBox.style.setProperty("--pick", picker.value));
+  picker.addEventListener("change", () => {
+    pickerBox.style.setProperty("--pick", picker.value);
+    guarded(null, async () => showLed(await tool("led_color", { color: picker.value })));
+  });
+  sw.append(pickerBox);
+
+  function markChip(box, value) {
+    for (const c of box.children) c.classList.toggle("sel", c.dataset.v === value);
+  }
+  async function setEffect(btn, effect) {
+    await guarded(btn, async () => {
+      const r = await tool("led_effect", { effect });
+      showLed(r);
+      markChip($("fx-chips"), r.effect || effect);
+      toast("Effekt „" + (r.effect || effect) + "“ aktiv.");
+    });
+  }
+  async function setPreset(btn, preset) {
+    await guarded(btn, async () => {
+      const r = await tool("led_preset", { preset });
+      showLed(r);
+      markChip($("ps-chips"), String(r.preset ?? preset));
+      toast("Preset „" + (r.preset ?? preset) + "“ geladen.");
+    });
+  }
+  for (const name of EFFECTS) {
+    $("fx-chips").append(el("button", { type: "button", class: "chip", "data-v": name, text: name, onclick: (e) => setEffect(e.currentTarget, name) }));
+  }
+  for (const p of PRESETS) {
+    $("ps-chips").append(el("button", { type: "button", class: "chip", "data-v": p, text: "Preset " + p, "aria-label": "Preset " + p, onclick: (e) => setPreset(e.currentTarget, p) }));
+  }
+  $("fx-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = $("fx-input").value.trim();
+    if (v) setEffect(e.currentTarget.querySelector("button"), v);
+  });
+  $("ps-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = $("ps-input").value.trim();
+    if (v) setPreset(e.currentTarget.querySelector("button"), v);
+  });
+
+  // =====================================================================
+  //  Klima
+  // =====================================================================
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const ARC = "M12 60 A48 48 0 0 1 108 60";
+  let TICKS = "";
+  for (let i = 0; i <= 10; i++) {
+    const a = Math.PI + i * Math.PI / 10, r1 = i % 5 ? 39 : 36, r2 = 42;
+    TICKS += `M${(60 + Math.cos(a) * r1).toFixed(1)} ${(60 + Math.sin(a) * r1).toFixed(1)}L${(60 + Math.cos(a) * r2).toFixed(1)} ${(60 + Math.sin(a) * r2).toFixed(1)}`;
+  }
+  function gauge(frac) {
+    const svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "0 0 120 64");
+    svg.setAttribute("class", "gauge");
+    svg.setAttribute("aria-hidden", "true");
+    const add = (d, cls, extra = {}) => {
+      const p = document.createElementNS(SVGNS, "path");
+      p.setAttribute("d", d); p.setAttribute("class", cls);
+      for (const [k, v] of Object.entries(extra)) p.setAttribute(k, v);
+      svg.append(p);
+    };
+    add(TICKS, "gt");
+    add(ARC, "gtrack", { pathLength: "100" });
+    add(ARC, "gval", { pathLength: "100", "stroke-dasharray": (Math.max(0, Math.min(1, frac)) * 100).toFixed(1) + " 100" });
+    return svg;
+  }
+  const fmt = (s) => String(s.value.toFixed(1)).replace(".", ",") + " " + (s.unit || "");
+  function renderSensors(r) {
+    const box = $("sensors");
+    box.replaceChildren();
+    const list = r.sensors || [];
+    if (!list.length) box.append(el("span", { class: "label", text: r.message || "Keine Sensoren." }));
+    let newest = null;
+    for (const s of list) {
+      const value = s.error ? null : fmt(s);
+      const range = /°/.test(s.unit || "") ? [0, 40] : /%/.test(s.unit || "") ? [0, 100] : null;
+      box.append(el("div", { class: "sensor" },
+        el("div", { class: "name", text: s.name }),
+        value && range ? gauge((s.value - range[0]) / (range[1] - range[0])) : null,
+        value ? el("div", { class: "big" + (range ? "" : " nog"), text: value }) : el("div", { class: "err", text: s.error }),
+      ));
+      if (s.timestamp) newest = s.timestamp;
+    }
+    $("sensor-time").textContent = newest ? "Stand: " + new Date(newest).toLocaleTimeString("de-DE") : "";
+    const [a, b] = list;
+    $("klima-state").textContent = list.map((s) => s.error ? s.name + ": –" : fmt(s)).join(" · ");
+    if (!a) setNode("klima", "–", shorten(r.message || "keine Sensoren", 18), "");
+    else setNode("klima", a.error ? "FEHLER" : fmt(a), b ? (b.error ? b.name + ": –" : fmt(b)) : a.name, a.error ? "warn" : "on");
+  }
+  // Nur die jeweils neueste Antwort anzeigen (Antworten können sich überholen).
+  let scriptsSeq = 0, sensorsSeq = 0;
+  async function fetchSensors() {
+    const my = ++sensorsSeq;
+    try {
+      const r = await tool("sensors_read");
+      if (my === sensorsSeq) renderSensors(r);
+    } catch (e) {
+      if (my === sensorsSeq && !known.klima && e.message !== "Kein Token") setNode("klima", "–", whyShort(e), "warn");
+      throw e;
+    }
+  }
+  async function readSensors(btn) {
+    await guarded(btn, fetchSensors);
+  }
+  $("sensor-refresh").addEventListener("click", (e) => readSensors(e.currentTarget));
+
+  // =====================================================================
+  //  Skripte
+  // =====================================================================
+  function renderScripts(list) {
+    const box = $("scripts");
+    box.replaceChildren();
+    const running = list.filter((s) => s.running).length;
+    setNode("skripte", running + " AKTIV", list.length + (list.length === 1 ? " Skript" : " Skripte"), running ? "on" : "");
+    $("skripte-state").textContent = running + " von " + list.length + " aktiv";
+    if (!list.length) { box.append(el("span", { class: "label", text: "Keine Skripte konfiguriert." })); return; }
+    for (const s of list) {
+      const dot = el("span", { class: "dot" + (s.running ? " on" : s.configured ? "" : " todo") });
+      const info = el("div", { class: "grow" },
+        el("div", { class: "nm", text: s.label }),
+        el("div", { class: "label", text: !s.configured ? "nicht eingerichtet (TODO)" : s.running ? "läuft · PID " + s.pid : "gestoppt" }),
+      );
+      const btn = el("button", {
+        type: "button", class: "b" + (s.running ? " danger" : ""), text: s.running ? "Stoppen" : "Starten",
+        "aria-label": (s.running ? "Stoppen: " : "Starten: ") + s.label, "data-script": s.id,
+        onclick: (e) => guarded(e.currentTarget, async () => {
+          try {
+            await tool(s.running ? "scripts_stop" : "scripts_start", { script_id: s.id });
+          } finally {
+            await loadScripts();
+            // Fokus auf den neu gezeichneten Knopf desselben Skripts setzen
+            const again = $("scripts").querySelector('[data-script="' + CSS.escape(s.id) + '"]');
+            if (again && document.activeElement === document.body) again.focus({ preventScroll: true });
+          }
+        }),
+      });
+      box.append(el("div", { class: "script" }, dot, info, btn));
+    }
+  }
+  async function fetchScripts() {
+    const my = ++scriptsSeq;
+    try {
+      const r = await tool("scripts_list");
+      if (my === scriptsSeq) renderScripts(r.scripts || []);
+    } catch (e) {
+      if (my === scriptsSeq && !known.skripte && e.message !== "Kein Token") setNode("skripte", "–", whyShort(e), "warn");
+      throw e;
+    }
+  }
+  async function loadScripts(btn) {
+    await guarded(btn, fetchScripts);
+  }
+  $("scripts-refresh").addEventListener("click", (e) => loadScripts(e.currentTarget));
+
+  // =====================================================================
+  //  PC: Herunterfahren mit Bestätigung
+  // =====================================================================
+  let pcTimer = null, pcLeft = 0;
+  let pcVol = null;   // letzte gelesene Lautstärke {percent, muted} (null = unbekannt)
+  function showPcIdle(reset = false) {
+    if (reset && pcTimer) { clearInterval(pcTimer); pcTimer = null; }
+    if (pcTimer) return;
+    const ok = sys.serverCls === "ok";
+    const sub = pcVol ? (pcVol.muted ? "Ton stumm" : "Ton " + pcVol.percent + " %") : "mit Bestätigung";
+    setNode("pc", ok ? "BEREIT" : sys.serverCls ? "OFFLINE" : "–", ok ? sub : sys.serverCls ? "keine Verbindung" : "", ok ? "on" : sys.serverCls ? "bad" : "");
+    $("pc-state").textContent = ok ? "Kein Herunterfahren geplant." : "";
+  }
+  function pcCountdown(sec) {
+    clearInterval(pcTimer);
+    pcLeft = sec;
+    const show = () => {
+      setNode("pc", "AUS IN " + pcLeft + " s", "Abbrechen möglich", "bad");
+      $("pc-state").textContent = "PC fährt in " + pcLeft + " s herunter.";
+    };
+    show();
+    pcTimer = setInterval(() => {
+      pcLeft -= 1;
+      if (pcLeft > 0) { show(); return; }
+      clearInterval(pcTimer); pcTimer = null;
+      setNode("pc", "FÄHRT AUS", "jetzt", "bad");
+      $("pc-state").textContent = "PC fährt herunter.";
+    }, 1000);
+  }
+  let confirmTimer = null;
+  let confirmId = null;
+  function closeConfirm() {
+    clearInterval(confirmTimer); confirmTimer = null; confirmId = null;
+    if ($("confirm-dialog").open) $("confirm-dialog").close();
+  }
+  function openConfirm(r) {
+    confirmId = r.confirm_id;
+    const total = Number(r.expires_in) || 30;
+    let left = total;
+    const ring = $("confirm-ring");
+    const show = () => {
+      $("confirm-count").textContent = Math.max(left, 0);
+      ring.style.strokeDashoffset = String(100 * (1 - Math.max(left, 0) / total));
+    };
+    // Text vom Server (z. B. „Editor schließen? …“); ältere Antworten ohne prompt = Herunterfahren
+    $("confirm-text").textContent = r.prompt || (r.action && r.action !== "pc_shutdown" ? r.message || "Aktion ausführen?"
+      : "PC herunterfahren? Er fährt 15 s nach der Bestätigung herunter.");
+    show();
+    clearInterval(confirmTimer);
+    confirmTimer = setInterval(() => {
+      left -= 1;
+      show();
+      if (left <= 0) { closeConfirm(); toast("Bestätigung abgelaufen."); }
+    }, 1000);
+    const d = $("confirm-dialog");
+    if (!d.open) d.showModal();
+    $("confirm-no").focus();
+  }
+  $("confirm-no").addEventListener("click", closeConfirm);
+  $("confirm-dialog").addEventListener("cancel", closeConfirm);
+  // Auch wenn der Browser den Dialog ohne cancel-Ereignis schließt: Countdown stoppen, Bestätigung verwerfen
+  $("confirm-dialog").addEventListener("close", (e) => {
+    if (e.currentTarget.open) return;   // inzwischen neu geöffnet
+    clearInterval(confirmTimer); confirmTimer = null; confirmId = null;
+  });
+  $("confirm-yes").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
+    if (!confirmId) return;
+    const id = confirmId;
+    closeConfirm();
+    const r = await api("/api/confirm/" + encodeURIComponent(id));
+    const res = r.result || {};
+    toast(res.message || "Ausgeführt.");
+    if (res.status === "shutdown_scheduled") pcCountdown(15);
+    if (res.action === "desktop_app_close") fetchApps().catch(() => {});
+  }));
+  $("shutdown").addEventListener("click", (e) => guarded(e.currentTarget, () => tool("pc_shutdown")));
+
+  // =====================================================================
+  //  PC-Steuerung: nur feste, geprüfte Aktionen (Lautstärke, Medientasten, Programme aus der Liste,
+  //  Sperren) und „Bildschirm beschreiben“. Bewusst keine freie Maus-/Tastatursteuerung.
+  // =====================================================================
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function icon(d, cls = "") {
+    const svg = document.createElementNS(SVG_NS, "svg"), p = document.createElementNS(SVG_NS, "path");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+    if (cls) svg.setAttribute("class", cls);
+    p.setAttribute("d", d); svg.append(p);
+    return svg;
+  }
+  const vol = $("vol");
+  let volHeld = false;   // Regler wird gerade gezogen
+  function setVol(v) {
+    vol.value = v;
+    vol.style.setProperty("--p", v + "%");
+  }
+  function showVolume(r) {
+    if (!r || typeof r.percent !== "number") return;
+    pcVol = { percent: r.percent, muted: !!r.muted };
+    vol.classList.remove("unk");
+    if (!volHeld) setVol(r.percent);
+    $("vol-val").textContent = r.muted ? "stumm · " + r.percent + " %" : r.percent + " %";
+    const m = $("vol-mute");
+    m.setAttribute("aria-pressed", String(!!r.muted));
+    m.setAttribute("aria-label", r.muted ? "Ton an" : "Ton aus");
+    showPcIdle();
+  }
+  // Fehlgeschlagene Änderung: Regler zurück auf den zuletzt gelesenen Wert (oder „unbekannt“)
+  function resetVol() {
+    if (pcVol) { showVolume(pcVol); return; }
+    vol.classList.add("unk"); setVol(50); $("vol-val").textContent = "–";
+  }
+  vol.addEventListener("input", () => {
+    vol.classList.remove("unk");
+    vol.style.setProperty("--p", vol.value + "%");
+    $("vol-val").textContent = vol.value + " %";
+  });
+  vol.addEventListener("pointerdown", () => { volHeld = true; });
+  for (const ev of ["pointerup", "pointercancel"]) window.addEventListener(ev, () => { volHeld = false; });
+  vol.addEventListener("change", () => guarded(null, async () => {
+    try { showVolume(await tool("desktop_volume", { action: "set", percent: Number(vol.value) })); }
+    catch (e) { resetVol(); throw e; }
+  }));
+  $("vol-mute").addEventListener("click", (e) => guarded(e.currentTarget, async () => {
+    const muted = e.currentTarget.getAttribute("aria-pressed") === "true";
+    showVolume(await tool("desktop_volume", { action: muted ? "unmute" : "mute" }));
+  }));
+
+  const MEDIA_TEXT = { play_pause: "Wiedergabe/Pause", next: "Nächster Titel", previous: "Vorheriger Titel", stop: "Stopp" };
+  for (const b of document.querySelectorAll("[data-media]")) {
+    b.addEventListener("click", () => guarded(b, async () => {
+      await tool("desktop_media", { action: b.dataset.media });
+      toast(MEDIA_TEXT[b.dataset.media] + " gesendet.");
+    }));
+  }
+
+  // Programme: nur IDs aus desktop.apps (config.yaml); Schließen läuft über den Bestätigen-Dialog
+  const FOCUS_ICON = "M14 4h6v6M20 4l-8 8M10 5H5v14h14v-5";
+  let appsSeq = 0;
+  function deskNote(r, err = "") {
+    const text = err || (r && r.enabled === false ? "PC-Steuerung ist ausgeschaltet (desktop.enabled in config.yaml)."
+      : r && r.available === false ? "Lautstärke, Medien, Programme und Sperren sind nur auf dem Windows-PC verfügbar." : "");
+    $("desk-note").textContent = text;
+    $("desk-note").hidden = !text;
+  }
+  function renderApps(r) {
+    deskNote(r);
+    const box = $("apps"), list = r.apps || [];
+    box.replaceChildren();
+    const running = list.filter((a) => a.running).length;
+    $("apps-count").textContent = list.length ? running + " von " + list.length + " offen" : "";
+    if (!list.length) { box.append(el("span", { class: "label", text: "Keine Programme freigegeben (desktop.apps in config.yaml)." })); return; }
+    for (const a of list) {
+      const todo = a.configured === false;
+      const dot = el("span", { class: "dot" + (a.running ? " on" : todo ? " todo" : "") });
+      const info = el("div", { class: "grow" },
+        el("div", { class: "nm", text: a.label }),
+        el("div", { class: "label", text: todo ? "nicht eingerichtet (TODO)" : a.running ? "läuft" : "geschlossen" }),
+      );
+      const acts = el("div", { class: "acts" });
+      const row = el("div", { class: "script app" }, dot, info, acts);
+      if (a.running) {
+        const front = el("button", {
+          type: "button", class: "b icon", title: "Nach vorne holen", "aria-label": "Nach vorne: " + a.label,
+          onclick: (e) => guarded(e.currentTarget, async () => {
+            const r2 = await tool("desktop_focus", { app_id: a.id });
+            if (r2.message) toast(r2.message, r2.status !== "focused");
+          }),
+        }, icon(FOCUS_ICON));
+        acts.append(front);
+      }
+      acts.append(el("button", {
+        type: "button", class: "b" + (a.running ? " danger" : ""), text: a.running ? "Schließen" : "Starten",
+        "aria-label": (a.running ? "Schließen: " : "Starten: ") + a.label, "data-app": a.id,
+        onclick: (e) => guarded(e.currentTarget, async () => {
+          if (a.running) {
+            const r2 = await tool("desktop_app_close", { app_id: a.id });   // → confirm_required öffnet den Dialog
+            if (r2.status !== "confirm_required") { if (r2.message) toast(r2.message); await fetchApps(); }
+            return;
+          }
+          const r2 = await tool("desktop_app_start", { app_id: a.id });
+          if (r2.message) toast(r2.message);
+          // Der neue Prozess taucht erst nach einem Moment in der Prozessliste auf
+          setTimeout(() => fetchApps().catch(() => {}), 1500);
+        }),
+      }));
+      box.append(row);
+    }
+  }
+  async function fetchApps() {
+    const my = ++appsSeq;
+    const r = await tool("desktop_apps_list");
+    if (my === appsSeq) renderApps(r);
+    return r;
+  }
+  // Beim Öffnen des PC-Panels still lesen: Fehler erscheinen als Hinweis im Panel, nicht als Toast
+  async function loadDesk() {
+    try {
+      const r = await fetchApps();
+      if (r.enabled && r.available) showVolume(await tool("desktop_volume", { action: "get" }));
+    } catch (e) {
+      if (e.message !== "Kein Token") deskNote(null, e.message);
+    }
+    loadVision();
+  }
+
+  // Bildschirm beschreiben: das Bild geht nur an das lokale Vision-Modell; hier kommt nur Text an.
+  // Der Text ist unzuverlässiger Bildschirminhalt → nur per textContent einsetzen, nie als HTML.
+  function showDescription(r) {
+    if (!r || typeof r.description !== "string") return;
+    const box = $("screen-desc");
+    box.hidden = false;
+    box.className = "desc";
+    const meta = [r.model ? "Modell " + r.model : "", "Stand " + new Date().toLocaleTimeString("de-DE")].filter(Boolean).join(" · ");
+    box.replaceChildren(el("div", { text: r.description }), el("div", { class: "dm", text: meta }));
+  }
+  $("screen-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const btn = $("screen-go");
+    if (isBusy(btn)) return;
+    const q = $("screen-q").value.trim();
+    const box = $("screen-desc");
+    box.hidden = false; box.className = "desc wait"; box.textContent = "Bildschirm wird beschrieben …";
+    guarded(btn, async () => {
+      try {
+        showDescription(await tool("screen_describe", q ? { question: q } : {}));
+      } catch (err) {
+        if (err.message === "Kein Token") box.hidden = true;
+        else { box.className = "desc err"; box.textContent = err.message; }
+        throw err;
+      }
+    });
+  });
+  let visionSt = null;
+  async function loadVision() {
+    try { visionSt = await tool("screen_status"); }
+    catch (e) { if (e.message === "Kein Token") return; visionSt = { reason: e.message }; }
+    showVision();
+  }
+  function showVision() {
+    const v = visionSt;
+    $("sys-vision").textContent = !v ? "–" : v.reason || (v.model || "Vision-Modell") + " · bereit";
+    const base = "Das Bildschirmfoto geht nur an das lokale Vision-Modell und wird nicht gespeichert.";
+    if (v && v.reason) $("screen-note").replaceChildren(el("span", { class: "warn-t", text: v.reason }), el("br"), base);
+    else $("screen-note").textContent = v && v.model ? "Lokales Modell " + v.model + ". " + base : base;
+  }
+
+  // =====================================================================
+  //  Befehl / Chat
+  // =====================================================================
+  // Das Protokoll ist das Transkript: per Mikrofon erkannte Eingaben und am PC gesprochene Antworten sind markiert.
+  const MIC_ICON = "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4";
+  const SPK_ICON = "M4 9v6h4l5 4V5L8 9zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12";
+  const mark = (cls, d, text) => el("span", { class: "mk " + cls }, icon(d), text);
+  function addMsg(text, who, calls = [], extra = "", opts = {}) {
+    const meta = el("div", { class: "meta" + (who === "me" ? " me" : "") });
+    for (const c of calls) meta.append(el("span", { class: "tc " + (c.ok ? "ok" : "bad"), text: (c.ok ? "✓ " : "✗ ") + c.tool }));
+    if (opts.voice) {
+      const d = Number(opts.voice.duration);
+      meta.append(mark("vo", MIC_ICON, "gesprochen" + (d > 0 ? " · " + d.toFixed(1).replace(".", ",") + " s" : "")));
+    }
+    if (opts.spoken) meta.append(mark("sp", SPK_ICON, "am PC gesprochen"));
+    if (extra) meta.append(el("span", { text: extra }));
+    const cls = "msg " + who + (opts.voice ? " voice" : "") + (opts.spoken ? " spoken" : "");
+    const node = el("div", { class: cls }, el("div", { text }), meta.childNodes.length ? meta : null);
+    $("log").append(node);
+    $("log").scrollTop = $("log").scrollHeight;
+  }
+  const CHAT_PH = $("chat-input").placeholder;
+  function setCmd(text) {
+    const c = $("cmd-text");
+    c.textContent = text;
+    c.classList.remove("hint", "live");
+    // Live-Anzeige der Aufnahme (liveCmd) auch im Eingabefeld wieder zurücknehmen
+    const input = $("chat-input");
+    input.placeholder = CHAT_PH;
+    input.classList.remove("live");
+  }
+  // opts.voice = Ergebnis der Spracherkennung ({text, language, duration}) → Eingabe als „gesprochen“ markieren
+  function sendChat(text, btn, opts = {}) {
+    if (isBusy(btn)) return;
+    addMsg(text, "me", [], "", { voice: opts.voice });
+    hud.setBusy(true);
+    return guarded(btn, async () => {
+      try {
+        const body = { message: text };
+        const pref = speakPref();   // nur mitschicken, wenn der Schalter bewusst gesetzt wurde (sonst Vorgabe des Servers)
+        if (pref !== null) body.speak = pref;
+        const r = await api("/api/chat", body);
+        const via = r.source === "fallback" ? "Regel-Parser" + (r.llm_error ? " · " + r.llm_error : "") : "LLM";
+        addMsg(r.reply || "–", "bot", r.tool_calls || [], via, { spoken: r.spoken === true });
+        setCmd(r.reply || "–");
+        for (const c of r.tool_calls || []) {
+          hud.pulse(NODE_OF(String(c.tool)), c.ok ? "ok" : "err");
+          if (!c.ok) continue;
+          if (c.result && c.result.status === "confirm_required") openConfirm(c.result);
+          if (c.tool.startsWith("led_")) showLed(c.result);
+          if (c.tool === "sensors_read") { sensorsSeq++; renderSensors(c.result || {}); }
+          if (c.tool === "scripts_list") { scriptsSeq++; renderScripts((c.result || {}).scripts || []); }
+          else if (c.tool.startsWith("scripts_")) loadScripts();
+          if (c.tool === "pc_shutdown_cancel") showPcIdle(true);
+          if (c.tool === "desktop_volume") showVolume(c.result);
+          if (c.tool === "screen_describe") showDescription(c.result);
+          if (c.tool === "desktop_apps_list") { appsSeq++; renderApps(c.result || {}); }
+          else if (/^desktop_app_(start|close)$/.test(c.tool) && (c.result || {}).status !== "confirm_required") {
+            setTimeout(() => fetchApps().catch(() => {}), 1500);
+          }
+        }
+      } catch (err) {
+        addMsg(err.message, "bot err");
+        setCmd(err.message);
+      } finally {
+        hud.setBusy(false);
+      }
+    });
+  }
+  $("chat-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("chat-input");
+    const text = input.value.trim();
+    const btn = $("chat-send");
+    if (!text || isBusy(btn)) return;
+    input.value = "";
+    sendChat(text, btn);
+  });
+  for (const s of SUGGEST) {
+    $("suggest").append(el("button", { type: "button", class: "chip", text: s, onclick: () => sendChat(s, $("chat-send")) }));
+  }
+  addMsg("Systeme bereit. Was kann ich für dich tun?", "bot");
+  // Ändert sich die Höhe des Protokolls (Vorschläge/Tastatur), unten bleiben
+  if (window.ResizeObserver) new ResizeObserver(() => { const l = $("log"); l.scrollTop = l.scrollHeight; }).observe($("log"));
+
+  // =====================================================================
+  //  Stimme: „PC spricht“ (Windows-Sprachausgabe am PC) und Spracheingabe (Aufnahme hier,
+  //  Erkennung lokal am PC mit Whisper – der Ton geht nur an JARVIS, nie an einen Cloud-Dienst)
+  // =====================================================================
+  const SPEAK_KEY = "jarvis.speak";
+  let speakMem = null;   // Ersatz, falls localStorage blockiert ist
+  let voiceSt = null;    // letzte Antwort von GET /api/voice/status (null = unbekannt)
+  function speakPref() {
+    const v = store.get(SPEAK_KEY) ?? speakMem;
+    return v === "1" ? true : v === "0" ? false : null;
+  }
+  const speakOn = () => speakPref() ?? !!(voiceSt && voiceSt.tts && voiceSt.tts.speak_replies);
+  const ttsReason = () => { const t = voiceSt && voiceSt.tts; return t && !t.available ? t.reason || "Sprachausgabe nicht verfügbar." : ""; };
+  const sttReason = () => { const s = voiceSt && voiceSt.stt; return s && !s.available ? s.reason || "Spracheingabe nicht verfügbar." : ""; };
+  const HTTPS_HINT = "Das Mikrofon geht im Browser nur über HTTPS. Am Handy JARVIS über die Tailscale-HTTPS-Adresse öffnen (siehe README, Spracheingabe am Handy).";
+  function showVoice() {
+    const b = $("speak-toggle"), on = speakOn(), why = ttsReason();
+    b.setAttribute("aria-pressed", String(on));
+    b.classList.toggle("na", !!why);
+    b.title = why || (on ? "Antworten werden am PC vorgelesen" : "Antworten werden nicht vorgelesen");
+    showMic();
+    const t = voiceSt && voiceSt.tts, s = voiceSt && voiceSt.stt;
+    // note = Hinweis zur Stimmwahl (z. B. keine deutsche Stimme installiert → Windows-Standardstimme)
+    $("sys-tts").textContent = !t ? "–" : t.available ? "bereit · " + (t.voice || "Standardstimme") + (on ? " · liest vor" : " · stumm")
+      + (t.note ? " · " + t.note : "") : t.reason || "nicht verfügbar";
+    const parts = [];
+    if (s) parts.push(s.available ? "Whisper " + s.model + (s.loaded ? " · geladen" : " · bereit") : s.reason || "nicht verfügbar");
+    if (!window.isSecureContext) parts.push("Browser: nur über HTTPS (Tailscale-HTTPS, siehe README)");
+    $("sys-stt").textContent = parts.join(" · ") || "–";
+  }
+  async function loadVoice() {
+    try { voiceSt = await api("/api/voice/status", undefined, "GET"); }
+    catch (e) { if (e.message === "Kein Token") return; voiceSt = null; }
+    showVoice();
+  }
+  $("speak-toggle").addEventListener("click", () => {
+    const on = !speakOn();
+    speakMem = on ? "1" : "0";
+    store.set(SPEAK_KEY, speakMem);
+    showVoice();
+    const why = ttsReason();
+    if (on) toast(why ? "Vorlesen an, aber: " + why : "PC liest Antworten vor.", !!why, why ? 7000 : 0);
+    else {
+      toast("PC liest nicht mehr vor.");
+      // Ausschalten verstummt auch eine gerade laufende Ansage
+      if (token && voiceSt && voiceSt.tts && voiceSt.tts.available) api("/api/voice/stop").catch(() => {});
+    }
+  });
+
+  // ---------- Spracheingabe: tippen = Aufnahme starten, nochmal tippen = senden ----------
+  const micBtns = [...document.querySelectorAll("[data-mic]")];
+  const rec = { state: "idle", mr: null, stream: null, chunks: [], mime: "", t0: 0, tick: null, cancel: false };
+  const micSupported = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  function micBlocked() {
+    if (!window.isSecureContext) return HTTPS_HINT;
+    if (!micSupported()) return "Dieser Browser kann keinen Ton aufnehmen.";
+    return sttReason();
+  }
+  const recCancelBtns = [...document.querySelectorAll("[data-rec-cancel]")];
+  function showMic() {
+    const why = rec.state === "idle" ? micBlocked() : "";
+    for (const b of recCancelBtns) b.hidden = rec.state !== "rec";
+    for (const b of micBtns) {
+      b.classList.toggle("rec", rec.state === "rec");
+      b.classList.toggle("na", !!why);
+      b.setAttribute("aria-pressed", String(rec.state === "rec"));
+      b.setAttribute("aria-label", rec.state === "rec" ? "Aufnahme beenden und senden" : "Spracheingabe");
+      if (rec.state === "busy") b.setAttribute("aria-busy", "true"); else b.removeAttribute("aria-busy");
+      b.title = rec.state === "rec" ? "Tippen: Aufnahme senden" : why || "Spracheingabe: tippen, sprechen, nochmal tippen";
+    }
+  }
+  // Aufnahme-Status in der Leiste und – bei offenem Befehl-Panel sichtbar – als Platzhalter im Eingabefeld
+  function liveCmd(text) {
+    setCmd(text);
+    $("cmd-text").classList.add("live");
+    const input = $("chat-input");
+    input.placeholder = text;
+    input.classList.add("live");
+  }
+  function micError(e) {
+    const n = e && e.name;
+    if (n === "NotAllowedError" || n === "SecurityError") return "Mikrofon-Zugriff verweigert – im Browser für diese Seite erlauben.";
+    if (n === "NotFoundError" || n === "OverconstrainedError") return "Kein Mikrofon gefunden.";
+    if (n === "NotReadableError") return "Das Mikrofon ist belegt (anderes Programm?).";
+    return "Mikrofon nicht verfügbar: " + ((e && e.message) || n || "unbekannter Fehler");
+  }
+  async function micClick() {
+    if (rec.state === "rec") { stopRec(false); return; }
+    if (rec.state !== "idle") return;
+    // Ohne HTTPS (Handy über http://…) gibt es kein Mikrofon im Browser → erklären statt still scheitern
+    if (!window.isSecureContext) { toast(HTTPS_HINT, false, 10000); return; }
+    if (!micSupported()) { toast("Dieser Browser kann keinen Ton aufnehmen (MediaRecorder fehlt).", true); return; }
+    if (!token) { askToken(); return; }
+    if (sttReason()) {
+      // Der gemerkte Status kann veraltet sein (z. B. Whisper inzwischen am PC installiert) – erst neu fragen
+      rec.state = "busy"; showMic();
+      await loadVoice();
+      rec.state = "idle"; showMic();
+    }
+    const why = sttReason();
+    if (why) { toast(why, true, 8000); return; }
+    startRec();
+  }
+  async function startRec() {
+    rec.state = "busy"; showMic();   // solange die Mikrofon-Freigabe des Browsers offen ist
+    // Wer spricht, unterbricht JARVIS: laufende Ansage am PC stoppen (sonst hört Whisper am PC die eigene Stimme mit)
+    if (voiceSt && voiceSt.tts && voiceSt.tts.available) api("/api/voice/stop").catch(() => {});
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      rec.state = "idle"; showMic();
+      toast(micError(e), true, 7000);
+      return;
+    }
+    try {
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]
+        .find((m) => typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(m)) || "";
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      Object.assign(rec, { mr, stream, chunks: [], mime: mr.mimeType || mime, cancel: false, t0: performance.now() });
+      mr.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); });
+      mr.addEventListener("stop", finishRec, { once: true });
+      // Mikrofon weg (anderes Programm, Gerät getrennt): nichts Halbes senden
+      const tracks = typeof stream.getAudioTracks === "function" ? stream.getAudioTracks() : [];
+      for (const t of tracks) if (typeof t.addEventListener === "function") t.addEventListener("ended", () => stopRec(true), { once: true });
+      mr.start();
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      Object.assign(rec, { mr: null, stream: null, state: "idle" });
+      showMic();
+      toast("Aufnahme nicht möglich: " + e.message, true);
+      return;
+    }
+    rec.state = "rec"; showMic();
+    const max = Math.max(1, Number(voiceSt && voiceSt.stt && voiceSt.stt.max_seconds) || 30);
+    const show = () => {
+      const sec = (performance.now() - rec.t0) / 1000;
+      if (sec >= max - 0.4) { stopRec(false); return; }   // Server nimmt höchstens max_seconds an
+      liveCmd("Höre zu … " + Math.floor(sec) + " s");   // roter Mikrofon-Knopf = zum Senden tippen
+    };
+    show();
+    rec.tick = setInterval(show, 250);
+  }
+  function stopRec(cancel) {
+    if (rec.state !== "rec") return;
+    clearInterval(rec.tick); rec.tick = null;
+    rec.cancel = cancel; rec.state = "busy"; showMic();
+    try { rec.mr.stop(); } catch { finishRec(); }
+  }
+  async function finishRec() {
+    const { chunks, stream, cancel } = rec;
+    const secs = (performance.now() - rec.t0) / 1000;
+    const type = String(rec.mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
+    if (stream) stream.getTracks().forEach((t) => t.stop());   // Mikrofon sofort freigeben
+    Object.assign(rec, { mr: null, stream: null, chunks: [] });
+    const done = () => { rec.state = "idle"; showMic(); };
+    if (cancel) { done(); setCmd("Aufnahme verworfen."); return; }
+    if (secs < 0.5 || !chunks.length) { done(); setCmd("Zu kurz."); toast("Zu kurz – Mikrofon antippen, sprechen, nochmal antippen.", true); return; }
+    liveCmd("Erkenne Sprache …");
+    try {
+      const fd = new FormData();
+      const ext = { "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/wav": "wav" }[type] || "webm";
+      fd.append("audio", new Blob(chunks, { type }), "sprache." + ext);
+      const r = await api("/api/voice/stt", fd);
+      const text = String(r.text || "").trim().slice(0, 500);
+      if (!text) { setCmd("Nichts verstanden."); toast("Nichts verstanden – bitte noch einmal.", true); return; }
+      useRecognized(text, r);
+    } catch (e) {
+      if (e.message !== "Kein Token") { setCmd(e.message); toast(e.message, true, 7000); }
+    } finally {
+      done();
+    }
+  }
+  // Erkannter Text kommt ins Eingabefeld und wird wie getippt gesendet (Antwort steht im Protokoll = Transkript)
+  function useRecognized(text, r) {
+    const input = $("chat-input"), btn = $("chat-send");
+    input.value = text;
+    if (isBusy(btn)) { setCmd(text); toast("Die letzte Antwort läuft noch – der erkannte Text steht im Eingabefeld.", false, 5000); return; }
+    input.value = "";
+    setCmd("„" + text + "“");
+    sendChat(text, btn, { voice: r });
+  }
+  for (const b of micBtns) b.addEventListener("click", micClick);
+  for (const b of recCancelBtns) b.addEventListener("click", () => stopRec(true));
+  // App gewechselt, Handy gesperrt, Tab im Hintergrund: Aufnahme verwerfen statt nach max_seconds Umgebungsgeräusche
+  // als Befehl zu senden. Zurück im Tab: Stimme-Status neu holen (z. B. Whisper inzwischen eingerichtet).
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (rec.state === "rec") stopRec(true); }
+    else if (token && loaded) loadVoice();
+  });
+  window.addEventListener("pagehide", () => { if (rec.state === "rec") stopRec(true); });
+  showVoice();
+
+  // =====================================================================
+  //  Panels (nur eins gleichzeitig)
+  // =====================================================================
+  let openId = null, opener = null, hideTimer = null, hiding = null; // hiding = Panel, das gerade ausblendet
+  let openedAt = 0;
+  const ON_OPEN = {
+    licht: () => tool("led_status").then(showLed).catch(ledUnavailable),
+    klima: () => readSensors(),
+    skripte: () => loadScripts(),
+    pc: () => loadDesk(),
+    system: () => { refreshStatus(); loadVoice(); loadVision(); },
+  };
+  const triggers = [...document.querySelectorAll("[data-panel]")];
+  const NARROW_BAR = 360;   // Befehlsleiste schmaler (px): ohne „CMD“-Kürzel und Quelle, damit der Text Platz hat
+  function setExpanded(id) {
+    for (const b of triggers) b.setAttribute("aria-expanded", String(b.dataset.panel === id));
+  }
+  // Panel-Lage aus dem HUD-Layout übernehmen: Sheet-Oberkante (Handy), Mittelpanel (Handy quer)
+  function applyGeom() {
+    const g = hud.geom();
+    const rs = document.documentElement.style;
+    rs.setProperty("--sheet-top", Math.round(g.sheetTop) + "px");
+    if (g.centerBox) {
+      rs.setProperty("--pl", g.centerBox.left + "px"); rs.setProperty("--pw", g.centerBox.width + "px");
+      rs.setProperty("--pt", g.centerBox.top + "px"); rs.setProperty("--ph", g.centerBox.height + "px");
+    }
+    // Handy quer: Befehlsleiste nur in der Mittelspalte; schmal → Kürzel und Quelle ausblenden
+    // (Breite aus dem Layout berechnet, nicht gemessen: die Leiste gleitet beim Moduswechsel noch)
+    if (g.cmdBox) {
+      rs.setProperty("--cl", g.cmdBox.left + "px"); rs.setProperty("--cr", g.cmdBox.right + "px");
+    }
+    let barW = Infinity;
+    if (g.cmdBox) barW = window.innerWidth - g.cmdBox.left - g.cmdBox.right;
+    else if (g.mode === "sheet") {
+      const cs = getComputedStyle($("safe-probe"));
+      barW = window.innerWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - 24;
+    }
+    $("cmd").classList.toggle("narrow", barW < NARROW_BAR);
+    applyCover();
+  }
+  // Was vom offenen Panel verdeckt ist, ist nicht bedienbar (inert); sichtbare Knoten bleiben antippbar.
+  function applyCover() {
+    for (const b of triggers) b.inert = false;
+    $("mic").inert = false;
+    if (!openId) return;
+    const g = hud.geom();
+    if (g.mode === "sheet") {
+      // Endlage des Sheets (die Einblend-Verschiebung zählt nicht): unten bündig, Breite aus dem Layout
+      const p = $("panel-" + openId);
+      const top = window.innerHeight - p.offsetHeight, l = p.offsetLeft, r = l + p.offsetWidth;
+      const under = (x, y) => y > top - 6 && x > l - 6 && x < r + 6;
+      for (const id of Object.keys(g.nodes)) if (under(g.nodes[id].x, g.nodes[id].y)) $("n-" + id).inert = true;
+      if (under(g.cx, g.cy)) $("core").inert = true;
+      $("cmd").inert = true; $("mic").inert = true;
+    } else if (g.mode === "center") {
+      $("core").inert = true; $("cmd").inert = true; $("mic").inert = true;
+      // Liegt das Panel (enges Querformat) über Knoten oder der Statusleiste, sind diese nicht bedienbar
+      const c = g.centerBox;
+      if (c) {
+        const under = (x, y) => x > c.left - 6 && x < c.left + c.width + 6 && y > c.top - 6 && y < c.top + c.height + 6;
+        for (const id of Object.keys(g.nodes)) if (under(g.nodes[id].x, g.nodes[id].y)) $("n-" + id).inert = true;
+        const sb = $("status-btn").getBoundingClientRect();
+        if (c.top < sb.bottom && c.left < sb.right && c.left + c.width > sb.left) $("status-btn").inert = true;
+      }
+    }
+  }
+  hud.onLayout(applyGeom);
+  const panelRO = window.ResizeObserver ? new ResizeObserver(() => { if (openId) applyCover(); }) : null;
+
+  function openPanel(id, from) {
+    if (openId === id) {
+      // Doppeltipp: der zweite Tipp kurz nach dem Öffnen schließt das Panel nicht gleich wieder
+      if (performance.now() - openedAt < 350) return;
+      closePanel(); return;
+    }
+    if (openId) { const old = $("panel-" + openId); old.classList.remove("open"); old.hidden = true; panelRO?.unobserve(old); }
+    const p = $("panel-" + id);
+    // Blendet ein anderes Panel gerade noch aus, sofort verbergen (sonst bliebe es unsichtbar, aber per Tab erreichbar)
+    clearTimeout(hideTimer); hideTimer = null;
+    if (hiding && hiding !== p) hiding.hidden = true;
+    hiding = null;
+    p.hidden = false;
+    void p.offsetWidth; // Startzustand für die Einblend-Animation festschreiben
+    p.classList.add("open");
+    document.body.classList.add("panel-open");
+    openId = id; opener = from || null; openedAt = performance.now();
+    setExpanded(id);
+    hud.setPanel(id);
+    panelRO?.observe(p);
+    const g = hud.geom();
+    const focusEl = id === "chat" && g.mode !== "sheet" && finePointer.matches ? $("chat-input") : p.querySelector(".x");
+    focusEl.focus({ preventScroll: true });
+    if (id === "chat") $("log").scrollTop = $("log").scrollHeight;
+    p.querySelector(".p-body").scrollTop = 0;
+    if (token && ON_OPEN[id]) ON_OPEN[id]();
+  }
+  function closePanel() {
+    if (!openId) return;
+    const p = $("panel-" + openId);
+    openId = null;
+    panelRO?.unobserve(p);
+    p.classList.remove("open");
+    document.body.classList.remove("panel-open");
+    clearTimeout(hideTimer);
+    if (reduceMotion.matches) p.hidden = true;
+    else { hiding = p; hideTimer = setTimeout(() => { p.hidden = true; hiding = null; hideTimer = null; }, 340); }
+    setExpanded(null);
+    hud.setPanel(null);
+    for (const b of triggers) b.inert = false;
+    $("mic").inert = false;
+    // Fokus immer an den Auslöser zurückgeben (nie auf <body> fallen lassen)
+    if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
+    opener = null;
+  }
+  for (const b of triggers) b.addEventListener("click", () => openPanel(b.dataset.panel, b));
+  for (const x of document.querySelectorAll("[data-close]")) x.addEventListener("click", closePanel);
+  $("fx").addEventListener("click", closePanel);   // Tipp auf freie HUD-Fläche schließt
+  document.addEventListener("keydown", (e) => {
+    // Escape während der Aufnahme verwirft sie (statt das Panel zu schließen)
+    if (e.key === "Escape" && rec.state === "rec") { e.preventDefault(); stopRec(true); return; }
+    if (document.querySelector("dialog[open]")) return;
+    if (e.key === "Escape" && openId) { e.preventDefault(); closePanel(); return; }
+    const tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(tag)) {
+      e.preventDefault();
+      if (openId !== "chat") openPanel("chat", $("cmd"));
+      $("chat-input").focus();
+    }
+  });
+
+  // ---------- Uhr (Telemetrie im HUD) ----------
+  function tick() {
+    if (!reduceMotion.matches) hud.setTele("clock", new Date().toLocaleTimeString("de-DE"));
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  // =====================================================================
+  //  Token + Start
+  // =====================================================================
+  $("token-form").addEventListener("submit", () => {
+    const v = $("token-input").value.trim();
+    if (!v) return;
+    token = v; store.set(TOKEN_KEY, v);
+    showTokenError("");
+    init();
+  });
+  $("token-show").addEventListener("change", (e) => { $("token-input").type = e.currentTarget.checked ? "text" : "password"; });
+  $("logout").addEventListener("click", () => { token = null; store.del(TOKEN_KEY); loaded = false; closePanel(); askToken(); });
+
+  let loaded = false;
+  function loadAll() {
+    loaded = true;
+    loadScripts();
+    readSensors();
+    loadVoice();   // Vorgabe für „PC spricht“ und ob die Spracheingabe am PC eingerichtet ist
+    // Beim Start still: ein noch nicht eingerichteter LED-Strip soll keine Fehlermeldung werfen.
+    tool("led_status").then(showLed).catch(ledUnavailable);
+  }
+  // Token zuerst mit genau einer Anfrage prüfen: ein Tippfehler kostet so nur einen der fünf Versuche bis zur Sperre.
+  async function init() {
+    const st = await refreshStatus();
+    if (!token) {
+      for (const id of ["licht", "klima", "skripte"]) if (!known[id]) setNode(id, "–", "Zugang fehlt", "warn");
+      askToken(); return;
+    }
+    if (st !== "ok") {
+      const why = whyShort({ status: st === "locked" ? 429 : st === "offline" ? 0 : 500, message: statusError });
+      for (const id of ["licht", "klima", "skripte"]) if (!known[id]) setNode(id, "–", why, "warn");
+      toast(statusError || "Status nicht lesbar", true);
+      return;
+    }
+    loadAll();
+  }
+  // Still im Hintergrund nachladen, damit die Knoten-Anzeigen aktuell bleiben.
+  function quietRefresh() {
+    if (!token || !loaded || document.hidden) return;
+    fetchSensors().catch(() => {});
+    fetchScripts().catch(() => {});
+  }
+
+  for (const id of ["licht", "klima", "skripte", "pc", "system"]) setNode(id, "–", "lädt …");
+  hud.start();
+  init();
+  // Status alle 30 s; war der Server beim Start weg oder gesperrt, die Knoten-Daten danach nachladen
+  setInterval(async () => {
+    const st = await refreshStatus();
+    if (st === "ok" && token && !loaded) loadAll();
+  }, 30000);
+  setInterval(quietRefresh, 60000);
+})();
+</script>
+</body>
+</html>
