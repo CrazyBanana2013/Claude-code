@@ -304,10 +304,15 @@ danach zu JARVIS weiter.
   „Verwerfen“-Knopf während der Aufnahme. Abweichung vom Fix-Vorschlag: Token-Sperre bleibt wie
   vorgegeben (siehe Architektur). Verifiziert: `JARVIS_PWSH=… pytest` inkl. Browser-HUD-Test und
   Installer-E2E grün; PSScriptAnalyzer PS-5.1-Profil 0 Funde.
+- [x] Version 0.3.0 (Commit `b9b5de6`), GitHub-Release v0.3.0 (Vorabversion):
+  https://github.com/CrazyBanana2013/Claude-code/releases/tag/v0.3.0 – Lauf 37523326063 erfolgreich;
+  `JARVIS-Setup-0.3.0.zip` (42 Dateien, keine config/secrets) byte-identisch mit lokalem Bau desselben
+  Commits (SHA-256 f023e8b0…d5ed). Verifiziert: `JARVIS_PWSH=… pytest` 944 passed auf genau diesem Stand.
 
 ## In Arbeit
 - ~~Unabhängiges Review der neuen Funktionen (Prompt-Injection, Windows-APIs, Spracheingabe, UX/Doku) –
   Workflow läuft; danach Fixes, Version 0.3.0 und neues Release.~~ → erledigt (siehe Erledigt).
+- Nichts. Nächster Schritt liegt beim User (Nächste Schritte A–F am echten PC).
 
 ## Nächste Schritte
 Empfohlener Weg mit dem Installer (ersetzt die manuellen Punkte 1, 2, 5 und 12 der Liste darunter):
