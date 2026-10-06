@@ -5,7 +5,8 @@ Unterstützt u. a.: "licht an/aus", "helligkeit 40", "farbe rot", "effekt rainbo
 "pc ausschalten", "herunterfahren abbrechen", "lauter"/"leiser"/"lautstärke 30"/"stumm"/"ton an",
 "pause"/"weiter"/"nächster titel"/"vorheriger titel", "pc sperren", "öffne <domain oder url>",
 "starte/schließe <programm>" (Skripte haben Vorrang), "was ist auf dem bildschirm".
-Mehrere LED-Befehle in einem Satz werden kombiniert ("licht an, helligkeit 40 und farbe blau").
+Mehrere Befehle in einem Satz werden Teil für Teil ausgeführt ("licht an, helligkeit 40 und farbe blau",
+"licht aus und pc sperren"); nicht verstandene Teile nennt die Antwort.
 """
 
 from __future__ import annotations
@@ -56,9 +57,12 @@ def _find_app(config: AppConfig, phrase: str):
         if phrase_n in (normalize(a.id), normalize(a.label)):
             return a
     for a in apps:
-        if phrase_n in normalize(a.label) or normalize(a.id) in phrase_n:
+        if phrase_n in normalize(a.label):
             return a
-    return None
+    # Sonst das Programm, das am weitesten vorne steht (direkt nach dem Verb) – nicht das erste der Liste.
+    hits = [(pos, i, a) for i, a in enumerate(apps) for key in {normalize(a.id), normalize(a.label)}
+            if key and (pos := phrase_n.find(key)) >= 0]
+    return min(hits, key=lambda h: (h[0], h[1]))[2] if hits else None
 
 
 # "öffne youtube.com", "geh auf https://…", "ruf wikipedia.org auf" – auf dem Originaltext, weil
@@ -141,8 +145,58 @@ def _media(t: str) -> str | None:
     return None
 
 
+# Teilsätze: "Licht aus und PC sperren", "Licht aus, Pause", "Schließe Rechner und starte Editor".
+# Nur an Leerraum/Komma-mit-Leerraum – Adressen enthalten keine Leerzeichen und bleiben ganz.
+_CLAUSE_SPLIT = re.compile(r"\s*[,;]\s+|\s+(?:und|sowie|dann|danach|anschließend|anschliessend)\s+", re.I)
+_LEADING_FILLER = re.compile(r"^(?:(?:und|dann|danach|bitte|auch|noch|außerdem|ausserdem)\s+)+", re.I)
+_FILLER_WORDS = {"bitte", "danke", "jarvis", "mal", "jetzt", "sofort", "gleich", "noch", "auch", "ok", "okay",
+                 "hey", "hallo", "hi", "und", "dann", "danach"}
+_LED_CONTEXT = re.compile(r"\b(licht|led|leds|lampe|strip|beleuchtung)\b")
+
+
+def _clauses(message: str) -> list[str]:
+    parts = [_LEADING_FILLER.sub("", p.strip()) for p in _CLAUSE_SPLIT.split(message)]
+    return [p for p in parts if set(_prep(p).split()) - _FILLER_WORDS]
+
+
+def plan(message: str, config: AppConfig) -> tuple[list[tuple[str, dict]] | str, list[str]]:
+    """Wie parse(), zusätzlich die Teilsätze, die nicht verstanden wurden (für einen Hinweis in der Antwort).
+
+    Sätze mit mehreren Teilen werden Teil für Teil gelesen ("Licht aus und PC sperren" = beides). Ein Teil
+    ohne eigenen Bezug erbt das Licht ("Licht an und 50 %"). Passt ein Teil gar nicht, gilt der ganze Satz
+    wie bisher (z. B. Preset-Namen mit "und") – und was dann noch fehlt, nennt die Antwort.
+    """
+    whole = _parse_one(message, config)
+    clauses = _clauses(message)
+    if len(clauses) < 2:
+        return whole, []
+    led_context = bool(_LED_CONTEXT.search(_prep(message)))
+    actions: list[tuple[str, dict]] = []
+    missed: list[str] = []
+    for clause in clauses:
+        result = _parse_one(clause, config)
+        if isinstance(result, str) and led_context and not _LED_CONTEXT.search(_prep(clause)):
+            inherited = _parse_one("licht " + clause, config)
+            result = inherited if not isinstance(inherited, str) else result
+        if isinstance(result, str):
+            missed.append(clause.strip(" .!?"))
+            continue
+        for item in result:
+            if item not in actions:
+                actions.append(item)
+    if not missed:
+        return actions, []
+    if not actions or (isinstance(whole, list) and whole != actions):
+        return whole, []  # der ganze Satz ergibt mehr Sinn (z. B. "Preset Abend und Nacht")
+    return actions, missed
+
+
 def parse(message: str, config: AppConfig) -> list[tuple[str, dict]] | str:
     """Gibt eine Liste (tool, args) zurück oder einen Antworttext, wenn nichts passt."""
+    return plan(message, config)[0]
+
+
+def _parse_one(message: str, config: AppConfig) -> list[tuple[str, dict]] | str:
     t = _prep(message)
     words = set(t.split())
 
@@ -321,9 +375,12 @@ def _describe(record: dict) -> str:
 
 
 async def handle(message: str, registry: Registry) -> dict[str, Any]:
-    parsed = parse(message, registry.ctx.config)
+    parsed, missed = plan(message, registry.ctx.config)
     if isinstance(parsed, str):
         return {"reply": parsed, "tool_calls": [], "source": "fallback"}
     records = [await run_recorded(registry, tool, args, source="fallback") for tool, args in parsed]
     reply = " ".join(_describe(r) for r in records)
+    if missed:
+        parts = ", ".join(f"„{m}“" for m in missed)
+        reply += f" Nicht verstanden (bitte einzeln sagen): {parts}."
     return {"reply": reply, "tool_calls": records, "source": "fallback"}

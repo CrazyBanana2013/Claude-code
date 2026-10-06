@@ -363,3 +363,33 @@ async def test_describe_uses_ollama_client_not_device_client(factory, grab):
         r = await c.post("/api/tools/screen_describe", json={})
     assert r.status_code == 200, r.text
     assert len(ollama.vision_requests) == 1 and factory.device_requests == []
+
+
+# --------------------------------------------------------------------------------------------
+# Bildschirm wählen: 1 = Hauptbildschirm, auch wenn Windows ihn nicht zuerst aufzählt
+# --------------------------------------------------------------------------------------------
+
+ALL = {"left": -1920, "top": 0, "width": 3840, "height": 1080}
+SIDE = {"left": -1920, "top": 0, "width": 1920, "height": 1080, "is_primary": False}
+MAIN = {"left": 0, "top": 0, "width": 1920, "height": 1080, "is_primary": True}
+THIRD = {"left": 1920, "top": 0, "width": 1280, "height": 1024, "is_primary": False}
+
+
+def test_monitor_one_is_the_primary_even_if_enumerated_second():
+    monitors = [ALL, SIDE, MAIN, THIRD]
+    assert screen.pick_monitor(monitors, 1) is MAIN
+    assert screen.pick_monitor(monitors, 2) is SIDE
+    assert screen.pick_monitor(monitors, 3) is THIRD
+    assert screen.pick_monitor(monitors, 0) is ALL
+
+
+def test_monitor_without_primary_flag_keeps_mss_order():
+    plain = [ALL, {"left": 0, "top": 0, "width": 800, "height": 600}, {"left": 800, "top": 0, "width": 800,
+                                                                         "height": 600}]
+    assert screen.pick_monitor(plain, 1) is plain[1] and screen.pick_monitor(plain, 2) is plain[2]
+
+
+@pytest.mark.parametrize("number", [4, 5, 16])
+def test_missing_monitor_is_a_clear_error(number):
+    with pytest.raises(ToolError, match=f"Bildschirm {number} gibt es nicht"):
+        screen.pick_monitor([ALL, SIDE, MAIN, THIRD], number)

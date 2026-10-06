@@ -10,6 +10,7 @@ Verwendete Endpunkte (laut Doku):
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from typing import Literal
@@ -47,6 +48,10 @@ def normalize(text: str) -> str:
         text = text.replace(a, b)
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"[\s\-_]+", "", text)
+
+
+def _loose(text: str) -> str:
+    return re.sub(r"[\s\-_]+", "", text.strip().casefold())
 
 
 def parse_color(value: str) -> tuple[int, int, int]:
@@ -135,18 +140,25 @@ async def _request(ctx: ToolContext, method: str, path: str, payload: dict | Non
         raise ToolError(f"WLED lieferte keine gültige JSON-Antwort für {path}.") from None
 
 
+def _int_or_none(value) -> int | None:
+    """Zahl vom Gerät übernehmen – nie fremden Text (geht ans Sprachmodell)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return int(value)
+
+
 def summarize(state: dict) -> dict:
     seg = state.get("seg") or [{}]
-    first = seg[0] if isinstance(seg, list) and seg else {}
+    first = seg[0] if isinstance(seg, list) and seg and isinstance(seg[0], dict) else {}
     cols = first.get("col") or [[0, 0, 0]]
     color = cols[0] if cols and isinstance(cols[0], list) else None
     bri = state.get("bri", 0)
     return {
         "on": bool(state.get("on")),
-        "brightness_percent": round(bri * 100 / 255) if isinstance(bri, (int, float)) else None,
-        "color": color[:3] if color else None,
-        "effect_id": first.get("fx"),
-        "preset_id": state.get("ps"),
+        "brightness_percent": round(bri * 100 / 255) if _int_or_none(bri) is not None else None,
+        "color": [_int_or_none(c) for c in color[:3]] if color else None,
+        "effect_id": _int_or_none(first.get("fx")),
+        "preset_id": _int_or_none(state.get("ps")),
     }
 
 
@@ -201,7 +213,12 @@ async def led_effect(ctx: ToolContext, p: EffectParams) -> dict:
             raise ToolError(f"Effekt '{p.effect}' nicht gefunden.")
         fx = matches[0]
     result = await _set(ctx, {"on": True, "seg": {"fx": fx}})
-    return {**result, "effect": names[fx]}
+    # Texte vom Gerät gehen nicht ans Sprachmodell (könnten eingeschleuste Anweisungen enthalten): zurück kommt
+    # der angefragte Name – der Gerätename nur, wenn er sich davon bloß in Groß-/Kleinschreibung und Leerraum
+    # unterscheidet (ohne normalize(), das fremde Schriftzeichen stillschweigend entfernen würde).
+    requested = p.effect.strip()
+    effect = names[fx] if _loose(names[fx]) == _loose(requested) else requested
+    return {**result, "effect": effect, "effect_id": fx}
 
 
 async def led_preset(ctx: ToolContext, p: PresetParams) -> dict:
@@ -216,15 +233,15 @@ async def led_preset(ctx: ToolContext, p: PresetParams) -> dict:
             raise ToolError("WLED lieferte keine Preset-Liste.")
         wanted = normalize(p.preset)
         found = [
-            (int(k), v.get("n", ""))
+            int(k)
             for k, v in presets.items()
             if k.isdigit() and int(k) > 0 and isinstance(v, dict) and normalize(str(v.get("n", ""))) == wanted
         ]
         if not found:
             raise ToolError(f"Preset '{p.preset}' nicht gefunden.")
-        ps, name = found[0]
+        ps, name = found[0], p.preset.strip()  # angefragter Name statt des Gerätetexts (siehe led_effect)
     result = await _set(ctx, {"ps": ps})
-    return {**result, "preset": name or ps}
+    return {**result, "preset": name or ps, "preset_id": ps}
 
 
 async def led_status(ctx: ToolContext, _p) -> dict:

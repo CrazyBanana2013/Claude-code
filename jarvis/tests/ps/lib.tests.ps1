@@ -557,6 +557,24 @@ Invoke-Test 'Spracheingabe an, aber Nein: nichts laden, Hinweis' {
     Assert-Equal @('voice') @($r.Result.Extras) 'Paket ist aber da'
     Assert-Equal 0 $script:processes.Count 'kein Download'
     Assert-True ($r.Text -match 'app\.voice\.stt --download --config') ('Befehl zum Nachholen: ' + $r.Text)
+    # "-m app..." geht nur im JARVIS-Ordner (Projekt nicht ins .venv installiert): Befehl mit cd
+    Assert-True ($r.Text.Contains(('cd "{0}"; ' -f $t))) ('Befehl wechselt in den Ordner: ' + $r.Text)
+}
+
+Invoke-Test 'Spracheingabe: Paket installiert, aber nicht ladbar (Exit 4) - kein sinnloser Download' {
+    . $voiceMocks
+    $t = New-TestDir 't'
+    $info = [pscustomobject]@{ stt_enabled = $true; stt_model = 'small' }
+    New-VoiceMocks -CheckCodes @(4)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'broken' $r.Result.State ('State: ' + $r.Text)
+    Assert-Equal @('voice') @($r.Result.Extras) 'Paket bleibt im Marker'
+    Assert-Equal 0 ($script:processes.Count + $script:asked.Count) 'kein Download, keine Frage'
+    Assert-True ($r.Text -match 'Visual C\+\+' -and $r.Text -match 'vc_redist\.x64\.exe') ('Hinweis VC++: ' + $r.Text)
+    New-VoiceMocks -CheckCodes @(3, 4)
+    $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
+    Assert-Equal 'broken' $r.Result.State 'auch direkt nach der Paket-Installation'
+    Assert-Equal 0 $script:processes.Count 'kein Download'
 }
 
 Invoke-Test 'Spracheingabe mit -Yes: nie laden (ausser -InstallVoice), pip-Weg mit requirements-voice.txt' {
@@ -612,6 +630,7 @@ Invoke-Test 'Spracheingabe: Fehler brechen nie ab' {
     $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
     Assert-Equal 'no-model' $r.Result.State 'Download scheitert'
     Assert-True ($r.Text -match 'Download des Whisper-Modells fehlgeschlagen') ('Warnung: ' + $r.Text)
+    Assert-True ($r.Text.Contains(('(im Ordner {0}): cd "{0}"; ' -f $t))) ('Spaeter-Befehl mit Ordner: ' + $r.Text)
     New-VoiceMocks -CheckCodes @(2)
     $r = Invoke-VoiceStep @{ Python = '/x/python'; Target = $t; PythonEnv = 'uv'; Info = $info; InstallVoice = $true }
     Assert-Equal 'error' $r.Result.State 'config-Fehler'

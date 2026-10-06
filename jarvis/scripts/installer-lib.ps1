@@ -1592,7 +1592,9 @@ function Get-JarvisVoiceConsent {
 function Initialize-JarvisVoice {
     # Schritt "Spracheingabe": nur wenn voice.stt.enabled in config.yaml steht (Info = Ausgabe von
     # "setup_wizard info"), und jeder Download nur nach Zustimmung. Ein Fehler bricht die Installation nie ab.
-    # Liefert Extras (fuer den Marker: @('voice') oder leer) und State: off, no-package, no-model, ready, error.
+    # Liefert Extras (fuer den Marker: @('voice') oder leer) und State: off, no-package, no-model, ready, broken, error.
+    # Exitcodes von "app.voice.stt --check": 0 Modell da, 1 Modell fehlt, 2 Config, 3 Paket fehlt,
+    # 4 Paket installiert, aber nicht ladbar (meist fehlende Visual-C++-Laufzeit - ein Download hilft dann nicht).
     param([string]$Python, [string]$Target, [string]$PythonEnv, $Info, [switch]$AssumeYes, [switch]$InstallVoice,
         [switch]$PreviouslyInstalled)
     $enabled = $false
@@ -1638,6 +1640,13 @@ function Initialize-JarvisVoice {
         Write-JarvisOk (Get-JarvisVoiceMessage $check)
         return [pscustomobject]@{ Extras = $voiceExtras; State = 'ready' }
     }
+    if ($check.ExitCode -eq 4) {
+        Write-JarvisWarn ('Spracheingabe: ' + (Get-JarvisVoiceMessage $check))
+        Write-JarvisInfo 'faster-whisper ist installiert, laesst sich aber nicht laden - meist fehlt die "Microsoft Visual C++'
+        Write-JarvisInfo 'Redistributable (x64)": https://aka.ms/vs/17/release/vc_redist.x64.exe installieren (ohne Adminrechte'
+        Write-JarvisInfo 'fragt Windows nach einem Administrator), dann Install.cmd erneut starten. JARVIS laeuft solange ohne Spracheingabe.'
+        return [pscustomobject]@{ Extras = $voiceExtras; State = 'broken' }
+    }
     if ($check.ExitCode -ne 1) {
         Write-JarvisWarn ('Spracheingabe: {0} (Exitcode {1})' -f (Get-JarvisVoiceMessage $check), $check.ExitCode)
         return [pscustomobject]@{ Extras = $voiceExtras; State = 'error' }
@@ -1647,13 +1656,14 @@ function Initialize-JarvisVoice {
     Write-JarvisInfo 'geladen (Ziel: voice.stt.download_root, Vorgabe state\whisper; kein Konto, kein Token). Danach laeuft die'
     Write-JarvisInfo 'Spracherkennung offline.'
     if (-not (Get-JarvisVoiceConsent ('Whisper-Modell "{0}" jetzt herunterladen?' -f $model) -AssumeYes:$AssumeYes -InstallVoice:$InstallVoice)) {
-        Write-JarvisInfo ('Spaeter von Hand (im Ordner {0}): {1}' -f $Target, $manual)
+        Write-JarvisInfo ('Spaeter: Install.cmd erneut starten - oder in PowerShell (im Ordner {0}): cd "{0}"; {1}' -f $Target, $manual)
         return [pscustomobject]@{ Extras = $voiceExtras; State = 'no-model' }
     }
     $rc = Invoke-JarvisProcess -FilePath $Python -ArgumentList (Get-JarvisVoiceArguments -Target $Target -Action 'download') -WorkingDirectory $Target
     if ($rc -ne 0) {
         Write-JarvisWarn (('Download des Whisper-Modells fehlgeschlagen (Exitcode {0}, Meldung oben). JARVIS laeuft trotzdem; ' +
-                'der Mikrofon-Knopf meldet dann "Modell fehlt". Spaeter erneut: {1}') -f $rc, $manual)
+                'der Mikrofon-Knopf meldet dann "Modell fehlt". Spaeter erneut: Install.cmd starten - oder in PowerShell ' +
+                '(im Ordner {2}): cd "{2}"; {1}') -f $rc, $manual, $Target)
         return [pscustomobject]@{ Extras = $voiceExtras; State = 'no-model' }
     }
     Write-JarvisOk ('Whisper-Modell "{0}" heruntergeladen.' -f $model)

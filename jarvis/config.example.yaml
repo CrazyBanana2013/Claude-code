@@ -61,7 +61,8 @@ scripts:
 desktop:
   enabled: true
   allow_open_url: true     # Webseiten im Standardbrowser öffnen (nur http/https)
-  # Leer = alle Domains. Sonst nur diese Domains und ihre Subdomains, z. B. ["youtube.com", "wikipedia.org"]
+  # Leer = alle öffentlichen Domains. Sonst NUR diese Domains und ihre Subdomains, z. B. ["youtube.com",
+  # "wikipedia.org"] – wer hier "fritz.box" einträgt, sperrt damit alle anderen Webseiten.
   allowed_domains: []
   # Feste Programmliste – das LLM kann nur diese IDs benutzen. command = Argumentliste (kein
   # Shell-String), process_name = Dateiname des laufenden Prozesses (zum Erkennen und Schließen),

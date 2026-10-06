@@ -171,13 +171,32 @@ danach zu JARVIS weiter.
   Tailscale-Adressen (auch nicht über DNS-Namen, die dorthin auflösen), optional Domain-Allowlist.
 - **Bildschirm-Beschreibung:** Bild nur an lokales Ollama (`llm.base_url` muss loopback sein), nie
   gespeichert, nie an den Client; Ergebnis als `untrusted_data` markiert und mit Präfix an das LLM;
-  nach `screen_describe` ist `desktop_open_url` im selben Chat-Durchgang gesperrt.
+  nach `screen_describe` ist `desktop_open_url` im selben Chat-Durchgang gesperrt (ab 0.3.0 verschärft,
+  siehe „Schutz nach Tool-Ergebnissen“).
 - **Stimme:** SAPI über comtypes statt PowerShell-Subprozess (kein Kommandozeilen-Pfad für Text, eingebautes
   Unterbrechen). Whisper lädt nur lokal (`local_files_only`), der Download ist ein eigener CLI-Schritt mit
   Zustimmung im Installer. `/api/voice/stt` liest den Upload erst nach der Token-Prüfung (eigener
   Multipart-Reader, 10 MB, `max_seconds`). Mikrofon am Handy braucht HTTPS → `tailscale serve`
   (User-Aufgabe, README Abschnitt 12); dann kommen alle Anfragen von 127.0.0.1 (Token bleibt Pflicht,
   Lockout ist mit dem PC-Browser geteilt).
+- **Schutz nach Tool-Ergebnissen (ab 0.3.0, aus dem Review):** Hat das Modell eine Bildschirmbeschreibung
+  gesehen, laufen im selben Auftrag nur noch lesende Tools (`READ_ONLY_TOOLS` in `app/llm.py` +
+  `desktop_volume` mit `action=get`); jede Aktion, auch Bestätigungs-Anfragen, wird blockiert. Ein Test
+  (`test_side_effect_list_covers_every_llm_tool`) schlägt fehl, wenn ein neues Tool nicht eingeordnet ist.
+  Höchstens 6 Tool-Aufrufe pro Modellantwort, 10 pro Auftrag, gleiche Aktion mit gleichen Argumenten nur
+  einmal, `screen_describe` höchstens einmal. `desktop_open_url` ab der zweiten Modellantwort nur, wenn der
+  Host in der Nachricht des Users steht. LED-Ergebnisse enthalten keine Texte vom Gerät mehr.
+- **Token-Sperre (ab 0.3.0):** wie vorgegeben 5 Fehlversuche/IP → 60 s 429 für jede Anfrage mit Token
+  (auch den richtigen – während der Sperre wird nicht verglichen); die Sperre verlängert sich nicht.
+  Anfragen ganz ohne Authorization-Header bekommen 401 und zählen nicht (eine fremde Webseite soll den
+  User nicht per `<img src=…>` aussperren können). Ein Review-Vorschlag, den richtigen Token während der
+  Sperre durchzulassen, wurde verworfen: Damit hätte man während der Sperre weiter raten können.
+- **uvicorn mit `proxy_headers=False`:** JARVIS wertet `X-Forwarded-For` nie aus (sonst 403 für Handys
+  mit Tailscale-IPv6 hinter `tailscale serve`, und lokale Programme könnten eine Absender-IP vortäuschen).
+- **COM als MTA** (`app/wincom.py`) für den Audio- und den SAPI-Thread: keine versteckten STA-Fenster
+  ohne Nachrichtenschleife. Programme schließen per `WM_CLOSE` an die Fenster der geprüften PIDs (auch
+  Store-App-Rahmen von ApplicationFrameHost, nur über Kindfenster-PID, nie über den Titel), erst danach
+  `taskkill`; `desktop_app_start` startet kein zweites Exemplar.
 
 ## Erledigt
 - [x] M0 Setup: `jarvis/` angelegt (Repo `Claude-code` war schon ein Git-Repo, daher kein
@@ -274,13 +293,26 @@ danach zu JARVIS weiter.
   simuliert (kein Windows): SAPI, pycaw, SendInput, LockWorkStation, SetForegroundWindow, mss,
   faster-whisper mit echten Modelldaten, Mikrofon über Tailscale-HTTPS.
 
+- [x] Unabhängiges Review der neuen Funktionen: 4 Prüfbereiche (Prompt-Injection, Windows-APIs,
+  Spracheingabe, Bedienung/Doku), 32 Funde, 29 nach Gegenprüfung bestätigt (1 mittel: 403 über
+  `tailscale serve`, wenn das Handy per Tailscale-IPv6 kommt; 28 niedrig), alle umgesetzt inkl. Tests.
+  Wichtigste Punkte: Aktionssperre nach Bildschirmbeschreibung, Aufruf-Obergrenzen, Spracheingabe
+  gegen präparierte Audiodateien (nur Browser-Codecs, Länge vor dem Resampling, MP4-Tabellen vor
+  FFmpeg prüfen, eine Erkennung gleichzeitig + eine wartend, sonst 503), defektes faster-whisper/VC++
+  → 503 mit Hinweis statt 500, Medientasten bei gesperrtem PC mit klarer Meldung, Fokus-Grenzen ehrlich
+  dokumentiert, Monitor 1 = Hauptbildschirm, Regel-Parser für Sätze mit mehreren Befehlen,
+  „Verwerfen“-Knopf während der Aufnahme. Abweichung vom Fix-Vorschlag: Token-Sperre bleibt wie
+  vorgegeben (siehe Architektur). Verifiziert: `JARVIS_PWSH=… pytest` inkl. Browser-HUD-Test und
+  Installer-E2E grün; PSScriptAnalyzer PS-5.1-Profil 0 Funde.
+
 ## In Arbeit
-- Unabhängiges Review der neuen Funktionen (Prompt-Injection, Windows-APIs, Spracheingabe, UX/Doku) –
-  Workflow läuft; danach Fixes, Version 0.3.0 und neues Release.
+- ~~Unabhängiges Review der neuen Funktionen (Prompt-Injection, Windows-APIs, Spracheingabe, UX/Doku) –
+  Workflow läuft; danach Fixes, Version 0.3.0 und neues Release.~~ → erledigt (siehe Erledigt).
 
 ## Nächste Schritte
 Empfohlener Weg mit dem Installer (ersetzt die manuellen Punkte 1, 2, 5 und 12 der Liste darunter):
-A. **Paket holen:** `JARVIS-Setup-0.2.0.zip` aus dem GitHub-Release v0.2.0 herunterladen
+A. **Paket holen:** `JARVIS-Setup-0.3.0.zip` aus dem GitHub-Release v0.3.0 herunterladen (bis 0.2.0:
+   `JARVIS-Setup-0.2.0.zip`; ein Update über die alte Installation ist vorgesehen)
    (oder Repo als ZIP / klonen; im Ordner `jarvis` liegt `Install.cmd`). Alternativ Release-ZIP bauen
    (`python scripts\build_installer.py`). ZIP vor dem Entpacken: Rechtsklick > Eigenschaften >
    „Zulassen“. NICHT in einen OneDrive-Ordner entpacken (z. B. nach `C:\JARVIS-Setup`).
@@ -296,6 +328,10 @@ F. **Neue Funktionen am PC testen:** Vision-Modell mit capability „vision“ z
    Auswahl im Assistenten), „Was ist auf dem Bildschirm?“, Lautstärke/Medien/Sperren, Editor starten und
    schließen (Bestätigung), „PC spricht“ (deutsche Stimme vorhanden? sonst Windows-Standardstimme),
    Mikrofon am PC (localhost) und am Handy nach `tailscale serve --bg 8765` (README Abschnitt 12).
+   Seit 0.3.0 zusätzlich: Rechner (Store-App) und Editor schließen – schließt sich das Fenster normal
+   („geschlossen“) oder wird hart beendet? Medientaste bei gesperrtem PC → Meldung „Der PC ist gesperrt …“?
+   „PC spricht“ und Lautstärke nach einigen Minuten noch bedienbar (COM als MTA)? Bei zwei Monitoren:
+   beschreibt „Was ist auf dem Bildschirm?“ den Hauptbildschirm?
 E. **Rückmeldung bei Windows-Fehlern** des Installers: Meldung + `%LOCALAPPDATA%\JARVIS\state\logs\server.log`
    hier eintragen.
 
@@ -366,6 +402,10 @@ Mögliche Weiterentwicklung (nicht beauftragt): eigener Sensor-Hub als weiterer 
   enthält (Token im URL-Fragment `#token=…`, UI übernimmt ihn in localStorage).
 - HUD kosmetisch offen: Helligkeitsregler steht vor dem ersten LED-Status auf 50 %, Anzeige „–“;
   auf dem Desktop überlappt der Telemetrie-Text leicht einige Strudel-Linien.
+- Seit 0.3.0 nur simuliert, am PC zu bestätigen: SAPI.SpVoice und MMDeviceEnumerator im MTA (laut
+  Registry meist ThreadingModel „Both“; bei „Apartment“ legt COM selbst einen Host-Thread an),
+  `WM_CLOSE` an ApplicationFrameHost-Rahmen von Store-Apps, `SendInput` mit `ERROR_ACCESS_DENIED` bei
+  gesperrtem PC, `is_primary` von mss für den Hauptbildschirm.
 - Entscheidung User: Soll das CS2-Skript mit eigenem Fenster laufen (`hide_window: false`,
   Standard) oder unsichtbar mit Log-Datei (`hide_window: true`)?
 

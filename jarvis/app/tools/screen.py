@@ -62,8 +62,26 @@ class ScreenParams(BaseModel):
 # --------------------------------------------------------------------------------------------
 
 
+def pick_monitor(monitors: list[dict], number: int) -> dict:
+    """Bildschirm aus der mss-Liste wählen: 0 = alle zusammen, 1 = Hauptbildschirm, 2 … = die übrigen.
+
+    mss liefert monitors[0] = alle zusammen und danach die Bildschirme in der Reihenfolge von
+    EnumDisplayMonitors – die ist laut Windows-Doku nicht festgelegt, monitors[1] ist also nicht immer der
+    Hauptbildschirm. Den markiert mss 10.2 mit "is_primary" (MONITORINFOF_PRIMARY); ohne Markierung bleibt
+    es bei monitors[1] (wie mss.MSS.primary_monitor).
+    """
+    if number == 0 and monitors:
+        return monitors[0]
+    screens = list(monitors[1:])
+    primary = next((m for m in screens if m.get("is_primary")), screens[0] if screens else None)
+    ordered = ([primary] if primary is not None else []) + [m for m in screens if m is not primary]
+    if not 1 <= number <= len(ordered):
+        raise ToolError(f"Bildschirm {number} gibt es nicht (vorhanden: 1–{max(len(ordered), 1)}, 0 = alle).")
+    return ordered[number - 1]
+
+
 def _grab_screen(monitor: int):
-    """Bildschirmfoto als PIL-Bild (RGB). monitor: 1 = Hauptbildschirm, 0 = alle zusammen."""
+    """Bildschirmfoto als PIL-Bild (RGB). monitor: 1 = Hauptbildschirm, 2 … = weitere, 0 = alle zusammen."""
     if not is_windows():
         raise ToolError(NOT_WINDOWS)
     import mss  # pragma: no cover - nur unter Windows erreichbar
@@ -71,12 +89,7 @@ def _grab_screen(monitor: int):
 
     try:
         with mss.MSS() as sct:
-            monitors = sct.monitors
-            if monitor >= len(monitors):
-                raise ToolError(
-                    f"Bildschirm {monitor} gibt es nicht (vorhanden: 1–{max(len(monitors) - 1, 1)}, 0 = alle)."
-                )
-            shot = sct.grab(monitors[monitor])
+            shot = sct.grab(pick_monitor(sct.monitors, monitor))
             # Umwandlung wie im mss-10.2.0-Beispiel docs/source/examples/pil.py
             return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
     except (mss.ScreenShotError, OSError):

@@ -23,11 +23,14 @@ from app.netguard import NetGuardMiddleware
 from app.tools import register_all
 from app.tools.registry import Registry, ToolArgumentError, ToolContext, ToolError, ToolNotFound
 from app.voice import VoiceService
-from app.voice.stt import STTError, read_upload
+from app.voice.stt import STTError, STTUnavailable, read_upload
 
 log = logging.getLogger("jarvis")
 
 WEB_INDEX = PROJECT_DIR / "web" / "index.html"
+# Spracherkennung: eine läuft, eine wartet – weitere bekommen sofort 503, bevor der Upload gelesen wird.
+STT_MAX_ACTIVE = 2
+STT_BUSY = "Die Spracherkennung ist gerade beschäftigt – bitte gleich noch einmal."
 
 
 class ChatRequest(BaseModel):
@@ -154,13 +157,27 @@ def create_app(
         voice.tts.stop()
         return {"ok": True}
 
+    stt_gate = {"active": 0, "limiter": None}
+
     @api.post("/voice/stt")
     async def voice_stt(request: Request):
         # Kein UploadFile-Parameter: FastAPI würde den Body sonst schon VOR der Token-Prüfung lesen.
         try:
             voice.stt.check_basic()  # 503 ohne den Upload überhaupt zu lesen
-            data, content_type = await read_upload(request)
-            return await anyio.to_thread.run_sync(voice.stt.transcribe, data, content_type)
+            if stt_gate["active"] >= STT_MAX_ACTIVE:
+                raise STTUnavailable(STT_BUSY)
+            stt_gate["active"] += 1
+            try:
+                data, content_type = await read_upload(request)
+                # Eigener Limiter (1 Thread): Dekodieren + Erkennen belegen nie den allgemeinen Thread-Pool, den
+                # die übrigen Routen brauchen; die wartende Anfrage wartet hier ohne Thread.
+                if stt_gate["limiter"] is None:
+                    stt_gate["limiter"] = anyio.CapacityLimiter(1)
+                return await anyio.to_thread.run_sync(
+                    voice.stt.transcribe, data, content_type, limiter=stt_gate["limiter"]
+                )
+            finally:
+                stt_gate["active"] -= 1
         except STTError as exc:
             return _error(str(exc), exc.status_code)
 

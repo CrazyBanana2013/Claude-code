@@ -1270,7 +1270,13 @@ const fakeMic = () => {
   }
   window.MediaRecorder = FakeRecorder;
   if (navigator.mediaDevices) {
-    navigator.mediaDevices.getUserMedia = async () => { window.__mic.gum++; return { getTracks: () => [{ stop() { window.__mic.stopped++; } }] }; };
+    navigator.mediaDevices.getUserMedia = async () => {
+      window.__mic.gum++;
+      const track = new EventTarget();
+      track.stop = () => { window.__mic.stopped++; };
+      window.__mic.track = track;   // Test kann "ended" auslösen (Mikrofon getrennt)
+      return { getTracks: () => [track], getAudioTracks: () => [track] };
+    };
   }
 };
 const mic = (page) => page.evaluate(() => window.__mic);
@@ -1569,6 +1575,68 @@ await test("Spracheingabe (gemockt): Aufnahme → /api/voice/stt → erkannter T
   assert.equal(uploads.length, n, "verworfene Aufnahme nicht hochgeladen");
   const m2 = await mic(page);
   assert.equal(m2.gum, m2.stopped, "jedes Öffnen des Mikrofons wieder freigegeben");
+});
+
+await test("Spracheingabe am Handy: „Verwerfen“ per Tipp, App-Wechsel und getrenntes Mikrofon verwerfen, veralteter Status wird neu gelesen", async () => {
+  const { page, rec } = await open({ goto: false, init: fakeMic });
+  const uploads = [];
+  let sttOk = false;
+  const NOT_INSTALLED = "Spracheingabe ist nicht installiert (Paket faster-whisper fehlt). Install.cmd erneut starten und dem Zusatzpaket zustimmen (oder Install.cmd -InstallVoice).";
+  await page.route("**/api/voice/status", (r) => r.fulfill(json(200, sttOk ? VOICE_OK
+    : { ...VOICE_OK, stt: { ...VOICE_OK.stt, available: false, reason: NOT_INSTALLED } })));
+  await page.route("**/api/voice/stt", (r) => { uploads.push(1); return r.fulfill(json(200, { text: "Licht an", language: "de", duration: 1 })); });
+  const statusReads = () => rec.api.filter((a) => a.path === "/api/voice/status").length;
+  await page.goto(BASE + "/");
+  await loaded(page);
+  await page.waitForFunction(() => document.getElementById("mic").classList.contains("na"));
+  // Am PC wurde Whisper inzwischen installiert – das Handy kennt noch den alten Status: Tippen fragt neu
+  sttOk = true;
+  const before = statusReads();
+  await page.tap("#mic");
+  await page.waitForFunction(() => document.getElementById("mic").classList.contains("rec"));
+  assert.equal(statusReads(), before + 1, "Status beim Tippen neu gelesen statt alter Fehlermeldung");
+  // Touch: „Verwerfen“ in der Leiste (Esc gibt es am Handy nicht)
+  assert.ok(await page.locator("#rec-cancel").isVisible(), "Verwerfen während der Aufnahme sichtbar");
+  await shot(page, "voice-m390-recording-cancel");
+  await sleep(600);
+  await page.tap("#rec-cancel");
+  await page.waitForFunction(() => !document.getElementById("mic").classList.contains("rec"));
+  await waitText(page, "#cmd-text", "Aufnahme verworfen.");
+  assert.ok(await page.locator("#rec-cancel").isHidden(), "Verwerfen nach der Aufnahme wieder weg");
+  // Im Befehl-Panel: Verwerfen neben dem Eingabefeld
+  await openPanel(page, "#cmd", "chat");
+  assert.ok(await page.locator("#chat-rec-cancel").isHidden());
+  await page.tap("#chat-mic");
+  await page.waitForFunction(() => document.getElementById("chat-mic").classList.contains("rec"));
+  await sleep(600);
+  await page.tap("#chat-rec-cancel");
+  await page.waitForFunction(() => !document.getElementById("chat-mic").classList.contains("rec"));
+  await waitText(page, "#cmd-text", "Aufnahme verworfen.");
+  // App gewechselt / Handy gesperrt (Seite verdeckt): verwerfen statt nach max_seconds Umgebungston zu senden
+  await page.tap("#chat-mic");
+  await page.waitForFunction(() => document.getElementById("chat-mic").classList.contains("rec"));
+  await sleep(600);
+  const setHidden = (hidden) => page.evaluate((h) => {
+    Object.defineProperty(document, "hidden", { value: h, configurable: true });
+    Object.defineProperty(document, "visibilityState", { value: h ? "hidden" : "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+  await setHidden(true);
+  await page.waitForFunction(() => !document.getElementById("chat-mic").classList.contains("rec"));
+  await waitText(page, "#cmd-text", "Aufnahme verworfen.");
+  const reads = statusReads();
+  await setHidden(false);
+  await until(() => statusReads() === reads + 1, "zurück im Tab: Stimme-Status neu gelesen");
+  // Mikrofon getrennt (Spur endet): nichts Halbes senden
+  await page.tap("#chat-mic");
+  await page.waitForFunction(() => document.getElementById("chat-mic").classList.contains("rec"));
+  await sleep(600);
+  await page.evaluate(() => window.__mic.track.dispatchEvent(new Event("ended")));
+  await page.waitForFunction(() => !document.getElementById("chat-mic").classList.contains("rec"));
+  await waitText(page, "#cmd-text", "Aufnahme verworfen.");
+  assert.equal(uploads.length, 0, "keine verworfene Aufnahme hochgeladen");
+  const m = await mic(page);
+  assert.equal(m.gum, m.stopped, "Mikrofon jedes Mal wieder freigegeben");
 });
 
 await test("PC spricht: Schalter wird gespeichert und als speak gesendet, gesprochene Antworten im Transkript markiert", async () => {

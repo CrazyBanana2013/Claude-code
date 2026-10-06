@@ -110,6 +110,15 @@
     border: 2px solid var(--bad); pointer-events: none; animation: micpulse 1.2s ease-out infinite;
   }
   @keyframes micpulse { from { transform: scale(.7); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
+  /* „Verwerfen“ während der Aufnahme (Touch-Ersatz für Esc) – in der Leiste links neben dem Mikrofon */
+  .rec-x {
+    position: absolute; z-index: 1; top: 0; bottom: 0; right: var(--micw); margin: 0; padding: 0 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px; color: #ffd0d5; background: rgba(40, 6, 12, .92); border: 0;
+    border-left: 1px solid rgba(255, 93, 108, .45); font: 600 12px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+  }
+  .rec-x svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+  .rec-x:focus-visible { outline: 2px solid var(--bad); outline-offset: -3px; }
+  .rec-x[hidden], button.b.rec-cancel[hidden] { display: none; }
   .cmd::before {
     content: ""; position: absolute; inset: 3px; pointer-events: none; --b: rgba(var(--cy-rgb), .9);
     background:
@@ -600,6 +609,7 @@
     <span class="cmd-line"><span class="prompt" aria-hidden="true">›</span><span class="cmd-text hint" id="cmd-text">Befehl an JARVIS …</span><span class="caret" aria-hidden="true"></span></span>
     <span class="cmd-src" id="cmd-src" aria-hidden="true">–</span>
   </button>
+  <button class="rec-x" id="rec-cancel" type="button" data-rec-cancel hidden aria-label="Aufnahme verwerfen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>Verwerfen</button>
   <button class="mic" id="mic" type="button" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
 </div>
 
@@ -792,6 +802,7 @@
     <div class="suggest" id="suggest" aria-label="Vorschläge"></div>
     <form class="send" id="chat-form" autocomplete="off">
       <button class="b icon" type="button" id="chat-mic" data-mic aria-pressed="false" aria-label="Spracheingabe"><svg class="micico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/><path class="sl" d="M4 4l16 16"/></svg></button>
+      <button class="b rec-cancel" type="button" id="chat-rec-cancel" data-rec-cancel hidden aria-label="Aufnahme verwerfen">Verwerfen</button>
       <input type="text" id="chat-input" maxlength="500" placeholder="z. B. „Licht auf 40 % und blau“" aria-label="Nachricht">
       <button class="b primary" type="submit" id="chat-send">Senden</button>
     </form>
@@ -2821,8 +2832,10 @@
     if (!micSupported()) return "Dieser Browser kann keinen Ton aufnehmen.";
     return sttReason();
   }
+  const recCancelBtns = [...document.querySelectorAll("[data-rec-cancel]")];
   function showMic() {
     const why = rec.state === "idle" ? micBlocked() : "";
+    for (const b of recCancelBtns) b.hidden = rec.state !== "rec";
     for (const b of micBtns) {
       b.classList.toggle("rec", rec.state === "rec");
       b.classList.toggle("na", !!why);
@@ -2847,13 +2860,19 @@
     if (n === "NotReadableError") return "Das Mikrofon ist belegt (anderes Programm?).";
     return "Mikrofon nicht verfügbar: " + ((e && e.message) || n || "unbekannter Fehler");
   }
-  function micClick() {
+  async function micClick() {
     if (rec.state === "rec") { stopRec(false); return; }
     if (rec.state !== "idle") return;
     // Ohne HTTPS (Handy über http://…) gibt es kein Mikrofon im Browser → erklären statt still scheitern
     if (!window.isSecureContext) { toast(HTTPS_HINT, false, 10000); return; }
     if (!micSupported()) { toast("Dieser Browser kann keinen Ton aufnehmen (MediaRecorder fehlt).", true); return; }
     if (!token) { askToken(); return; }
+    if (sttReason()) {
+      // Der gemerkte Status kann veraltet sein (z. B. Whisper inzwischen am PC installiert) – erst neu fragen
+      rec.state = "busy"; showMic();
+      await loadVoice();
+      rec.state = "idle"; showMic();
+    }
     const why = sttReason();
     if (why) { toast(why, true, 8000); return; }
     startRec();
@@ -2877,6 +2896,9 @@
       Object.assign(rec, { mr, stream, chunks: [], mime: mr.mimeType || mime, cancel: false, t0: performance.now() });
       mr.addEventListener("dataavailable", (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); });
       mr.addEventListener("stop", finishRec, { once: true });
+      // Mikrofon weg (anderes Programm, Gerät getrennt): nichts Halbes senden
+      const tracks = typeof stream.getAudioTracks === "function" ? stream.getAudioTracks() : [];
+      for (const t of tracks) if (typeof t.addEventListener === "function") t.addEventListener("ended", () => stopRec(true), { once: true });
       mr.start();
     } catch (e) {
       stream.getTracks().forEach((t) => t.stop());
@@ -2935,6 +2957,14 @@
     sendChat(text, btn, { voice: r });
   }
   for (const b of micBtns) b.addEventListener("click", micClick);
+  for (const b of recCancelBtns) b.addEventListener("click", () => stopRec(true));
+  // App gewechselt, Handy gesperrt, Tab im Hintergrund: Aufnahme verwerfen statt nach max_seconds Umgebungsgeräusche
+  // als Befehl zu senden. Zurück im Tab: Stimme-Status neu holen (z. B. Whisper inzwischen eingerichtet).
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (rec.state === "rec") stopRec(true); }
+    else if (token && loaded) loadVoice();
+  });
+  window.addEventListener("pagehide", () => { if (rec.state === "rec") stopRec(true); });
   showVoice();
 
   // =====================================================================

@@ -7,8 +7,9 @@ Aufruf im Installationsordner mit dem Python der virtuellen Umgebung:
 
 configure  Exit 0 = gespeichert oder unverändert gelassen, 1 = abgebrochen (Datei unberührt), 2 = Fehler.
 token      Legt secrets.yaml mit einem neuen Token an, falls noch keiner existiert (zeigt ihn einmal an).
-info       Eine Zeile JSON: {"bind", "port", "local_url", "warnings", "desktop_enabled", "vision_model",
-           "tts_enabled", "stt_enabled", "stt_model", "stt_model_size"} (vision_model = null, solange TODO).
+info       Eine Zeile JSON: {"bind", "port", "local_url", "warnings", "desktop_enabled", "desktop_open_url",
+           "desktop_apps", "vision_model", "tts_enabled", "speak_replies", "stt_enabled", "stt_model",
+           "stt_model_size"} (vision_model = null, solange TODO).
 
 Grundsätze:
 - Geräte (WLED, ESPHome) werden höchstens lesend abgefragt (GET), Ollama nur über GET /api/tags und
@@ -755,6 +756,24 @@ def _skip_hint(configured: bool) -> str:
     return "Enter bzw. '-' = überspringen (bleibt TODO)."
 
 
+
+VISION_OFF = "TODO_VISIONMODELL"
+
+
+def installed_name(name: str, names: list[str]) -> str | None:
+    """Name aus Ollamas Liste (/api/tags), zu dem ein eingetragener Modellname gehört.
+
+    Ollama schreibt Modelle in der Liste immer mit Tag; ein von Hand eingetragenes "llava" ist dort
+    "llava:latest" (Ollama ergänzt ":latest" auch beim Aufruf).
+    """
+    name = str(name or "").strip()
+    if name in names:
+        return name
+    if name and ":" not in name and f"{name}:latest" in names:
+        return f"{name}:latest"
+    return None
+
+
 class Wizard:
     """Fragt die wichtigsten Werte ab und ändert `self.data` (vollständiges Config-dict)."""
 
@@ -1081,16 +1100,16 @@ class Wizard:
             self.say(f"  Ohne Tool-Unterstützung (für JARVIS nicht nutzbar): {', '.join(others)}")
         names = [m.name for m in tools]
         current = llm["model"]
-        if current in names:
-            default = names.index(current)
-        else:
-            default = 0
-            if not is_todo(current):
-                self.say(f"  Hinweis: '{current}' (bisher eingetragen) ist nicht installiert oder kann keine Tools.")
+        installed = installed_name(current, names)
+        keep = not is_todo(current) and installed is None  # von Hand eingetragen, nicht in der Liste
+        default = names.index(installed) if installed else 0
+        if keep:
+            self.say(f"  Hinweis: '{current}' (bisher eingetragen) steht nicht in Ollamas Liste der Tool-Modelle")
+            self.say("  (nicht installiert, anders geschrieben oder ohne Tools) – Enter behält den Eintrag.")
         while True:
-            shown = f"{default + 1}: {names[default]}"
+            shown = f"bisher: {current}" if keep else f"{default + 1}: {names[default]}"
             raw = self.ask("Modell (Nummer oder Name, '-' = unverändert lassen)", show=shown)
-            if raw == SKIP:
+            if raw == SKIP or (not raw and (keep or installed == names[default])):
                 self.say(f"  llm.model bleibt: {_display(current)}")
                 return
             if not raw:
@@ -1156,6 +1175,8 @@ class Wizard:
         models = self._ollama_models()
         if models is None:
             self.say(f"  Ollama ist nicht erreichbar – vision.model bleibt: {_display(current)}")
+            if not is_todo(current):
+                self.say(f"  (Abschalten: vision.model in config.yaml auf {VISION_OFF} setzen.)")
             return
         candidates = vision_models(models)
         if not candidates:
@@ -1179,18 +1200,27 @@ class Wizard:
             extra = f" – {', '.join(notes)}" if notes else ""
             self.say(f"  {i}) {model.name}  ({model.size_gb:.1f} GB){extra}")
         names = [m.name for m in candidates]
-        if current in names:
-            default = names.index(current)
+        installed = installed_name(current, names)
+        keep = not is_todo(current) and installed is None  # von Hand eingetragen, nicht in der Liste
+        if installed:
+            default = names.index(installed)
         elif llm["model"] in names:
             default = names.index(llm["model"])  # gleiches Modell wie der Chat: braucht keinen zusätzlichen VRAM
         else:
             default = 0
-            if not is_todo(current):
-                self.say(f"  Hinweis: '{current}' (bisher eingetragen) ist nicht installiert oder versteht keine Bilder.")
+        if keep:
+            self.say(f"  Hinweis: '{current}' (bisher eingetragen) steht nicht in Ollamas Liste der Vision-Modelle")
+            self.say("  (nicht installiert, anders geschrieben oder ohne 'vision') – Enter behält den Eintrag.")
+        if not is_todo(current):
+            self.say(f"  'aus' schaltet 'Bildschirm beschreiben' ab (vision.model = {VISION_OFF}).")
         while True:
-            shown = f"{default + 1}: {names[default]}"
-            raw = self.ask("Vision-Modell (Nummer oder Name, '-' = unverändert lassen)", show=shown)
-            if raw == SKIP:
+            shown = f"bisher: {current}" if keep else f"{default + 1}: {names[default]}"
+            raw = self.ask("Vision-Modell (Nummer oder Name, '-' = unverändert lassen, 'aus' = abschalten)", show=shown)
+            if raw.lower() == "aus":
+                vision["model"] = VISION_OFF
+                self.say(f"  -> Bildschirm beschreiben aus (vision.model = {VISION_OFF})")
+                return
+            if raw == SKIP or (not raw and (keep or installed == names[default])):
                 self.say(f"  vision.model bleibt: {_display(current)}")
                 return
             if not raw:
@@ -1579,9 +1609,12 @@ def _configure_interactive(config_path, example_path, io, http, is_file, is_dir,
     io.say("Damit Änderungen wirken: JARVIS neu starten (Startmenü > JARVIS > JARVIS beenden, dann")
     io.say("JARVIS starten). Install.cmd erledigt das automatisch.")
     if final["voice"]["stt"]["enabled"]:
-        io.say("Spracheingabe: Zusatzpaket und Whisper-Modell installiert Install.cmd (nach Rückfrage). Ohne")
-        io.say("Installer im JARVIS-Ordner: uv sync --frozen --no-dev --extra voice, danach")
-        io.say(".venv\\Scripts\\python.exe -m app.voice.stt --download --config config.yaml")
+        io.say("Spracheingabe: Zusatzpaket und Whisper-Modell installiert Install.cmd (nach Rückfrage, oder")
+        io.say("Install.cmd -InstallVoice). Ohne Installer in PowerShell (uv liegt nicht im PATH, daher pip):")
+        folder = config_path.resolve().parent
+        io.say(f'  cd "{folder}"')
+        io.say("  .venv\\Scripts\\python.exe -m pip install --require-hashes -r requirements-voice.txt")
+        io.say("  .venv\\Scripts\\python.exe -m app.voice.stt --download --config config.yaml")
     warnings = config_warnings(parse_config(final))
     if warnings:
         io.say("Noch offen (JARVIS startet trotzdem):")
@@ -1646,8 +1679,11 @@ def info(config_path: Path) -> int:
         "warnings": config_warnings(cfg),
         # Für den Installer (Zusammenfassung, optionales Paket für die Spracheingabe):
         "desktop_enabled": cfg.desktop.enabled,
+        "desktop_open_url": cfg.desktop.allow_open_url,
+        "desktop_apps": [a.label for a in cfg.desktop.apps],
         "vision_model": None if is_todo(cfg.vision.model) else cfg.vision.model,
         "tts_enabled": cfg.voice.tts.enabled,
+        "speak_replies": cfg.voice.tts.speak_replies,
         "stt_enabled": cfg.voice.stt.enabled,
         "stt_model": cfg.voice.stt.model,
         "stt_model_size": APPROX_SIZES.get(cfg.voice.stt.model),  # z. B. "ca. 500 MB", null = unbekannt

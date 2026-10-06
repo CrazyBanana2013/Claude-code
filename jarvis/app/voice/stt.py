@@ -63,6 +63,21 @@ _MAGIC = {
     "wav": lambda d: d[:4] == b"RIFF" and d[8:12] == b"WAVE",
     "mp4": lambda d: d[4:8] == b"ftyp",
 }
+# Nur die Codecs, die Browser (MediaRecorder) wirklich schicken – kleinere Angriffsfläche der FFmpeg-Decoder
+# und keine Formate mit beliebig großen Rahmen bei winziger Abtastrate (z. B. FLAC/PCM mit 4 Hz).
+CODECS = {
+    "webm": {"opus", "vorbis"},
+    "ogg": {"opus", "vorbis"},
+    "mp4": {"aac", "opus"},
+    "wav": {"pcm_s16le", "pcm_f32le"},
+}
+MIN_RATE, MAX_RATE = 8000, 192000
+MAX_CHANNELS = 2
+# MP4: höchstens so viele Einträge (Samples/Chunks) pro Sekunde in den Tabellen, bevor FFmpeg sie liest.
+# AAC hat ~47 Pakete/s, Opus 50 (bis 400 bei 2,5-ms-Rahmen) – 500/s ist großzügig.
+MP4_ENTRIES_PER_SECOND = 500
+MP4_ENTRIES_EXTRA = 1000
+VCREDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 
 # --- Fehler (Text ist für den User, status_code für die HTTP-Antwort) -----------------------
@@ -86,17 +101,44 @@ class ModelMissing(STTUnavailable):
     pass
 
 
+class WhisperBroken(STTUnavailable):
+    """faster-whisper ist installiert, lässt sich aber nicht laden (z. B. fehlende Windows-DLL)."""
+
+
 def download_hint() -> str:
+    # Mit cd: Das Projekt ist nicht ins .venv installiert, "-m app…" geht nur im JARVIS-Ordner.
     return (
-        "Einmalig im JARVIS-Ordner ausführen: "
-        ".venv\\Scripts\\python.exe -m app.voice.stt --download --config config.yaml "
-        "(oder Install.cmd erneut starten und die Spracheingabe aktivieren)."
+        "Install.cmd erneut starten und dem Download zustimmen – oder in PowerShell: "
+        f'cd "{PROJECT_DIR}"; .venv\\Scripts\\python.exe -m app.voice.stt --download --config config.yaml'
     )
 
 
 # --- Wrapper um faster-whisper (in Tests ersetzt) ----------------------------------------
 def whisper_installed() -> bool:
     return importlib.util.find_spec("faster_whisper") is not None
+
+
+_BROKEN: str | None = None  # gemerkt, falls der Import einmal an einer DLL gescheitert ist (gilt bis Neustart)
+
+
+def _broken_message(exc: BaseException) -> str:
+    return (
+        f"Spracheingabe: faster-whisper ist installiert, lässt sich aber nicht laden ({type(exc).__name__}: {exc}). "
+        "Meist fehlt die „Microsoft Visual C++ Redistributable (x64)“ – installieren von "
+        f"{VCREDIST_URL}, dann JARVIS neu starten."
+    )
+
+
+def _import_whisper(module: str = "faster_whisper.utils") -> Any:
+    """faster-whisper importieren. Lädt CTranslate2/PyAV/onnxruntime samt DLLs – unter Windows wirft ein
+    fehlender VC++-Laufzeit-Teil OSError/ImportError; daraus wird WhisperBroken mit Hinweis statt HTTP 500."""
+    global _BROKEN
+    try:
+        return importlib.import_module(module)
+    except (ImportError, OSError) as exc:
+        _BROKEN = _broken_message(exc)
+        log.warning("faster-whisper lässt sich nicht laden: %s", exc)
+        raise WhisperBroken(_BROKEN) from None
 
 
 def resolve_download_root(settings: Any, state_dir: Path) -> Path:
@@ -121,8 +163,7 @@ def locate_model(settings: Any, root: Path) -> Path:
         raise STTUnavailable("voice.stt.model ist leer – z. B. small eintragen.")
     path = _local_model_dir(name)
     if path is None:
-        from faster_whisper.utils import download_model
-
+        download_model = _import_whisper("faster_whisper.utils").download_model
         try:
             path = Path(download_model(name, local_files_only=True, cache_dir=str(root)))
         except ValueError:
@@ -143,7 +184,7 @@ def locate_model(settings: Any, root: Path) -> Path:
 
 
 def load_model(settings: Any, path: Path, root: Path) -> Any:
-    from faster_whisper import WhisperModel
+    WhisperModel = _import_whisper("faster_whisper").WhisperModel  # noqa: N806
 
     return WhisperModel(
         str(path),
@@ -167,12 +208,92 @@ def container_for(content_type: str, data: bytes) -> str:
     return container
 
 
+def _mp4_boxes(data: bytes, start: int, end: int, depth: int = 0):
+    """(Typ, Inhalt-Anfang, Ende) der MP4-Boxen zwischen start und end – wie FFmpeg tolerant bei zu großen Größen."""
+    pos = start
+    while pos + 8 <= end and depth < 12:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1 and pos + 16 <= end:
+            size, header = int.from_bytes(data[pos + 8:pos + 16], "big"), 16
+        elif size == 0:
+            size = end - pos
+        if size < header:
+            return
+        box_end = min(pos + size, end)
+        yield kind, pos + header, box_end
+        pos += size
+
+
+def _mp4_check_tables(data: bytes, max_seconds: float) -> None:
+    """Sample-Tabellen einer MP4-Datei VOR av.open prüfen.
+
+    FFmpegs mov-Demuxer legt beim Öffnen für jeden angekündigten Eintrag Speicher an (Index, Größentabelle)
+    – eine 850-Byte-Datei mit „80 Millionen Samples“ kostet so ~3 GB, bevor max_seconds greifen kann.
+    Geprüft werden stsz/stz2 (Anzahl), stts/ctts (Summe), stsc (Samples pro Chunk), stco/co64 (Chunks)
+    und bei fragmentierten Dateien (Safari) trun (Summe). Unbekannte Boxen werden übersprungen.
+    """
+    limit = int((float(max_seconds) + DURATION_GRACE) * MP4_ENTRIES_PER_SECOND) + MP4_ENTRIES_EXTRA
+    containers = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"moof", b"traf", b"edts", b"mvex"}
+    totals = {"trun": 0}
+
+    def u32(pos: int) -> int:
+        return int.from_bytes(data[pos:pos + 4], "big") if pos + 4 <= len(data) else 0
+
+    def walk(start: int, end: int, depth: int) -> None:
+        for kind, body, box_end in _mp4_boxes(data, start, end, depth):
+            counts: list[int] = []
+            if kind in containers:
+                walk(body, box_end, depth + 1)
+            elif kind == b"stsz":  # version/flags, sample_size, sample_count
+                counts.append(u32(body + 8))
+            elif kind == b"stz2":  # version/flags, reserved+field_size, sample_count
+                counts.append(u32(body + 8))
+            elif kind in (b"stts", b"ctts"):  # version/flags, entry_count, (count, delta)…
+                entries = u32(body + 4)
+                pos, total = body + 8, 0
+                for _ in range(min(entries, (box_end - body) // 8 + 1)):
+                    if pos + 8 > box_end:
+                        break
+                    total += u32(pos)
+                    pos += 8
+                counts += [entries, total]
+            elif kind == b"stsc":  # version/flags, entry_count, (first_chunk, samples_per_chunk, desc)…
+                entries = u32(body + 4)
+                pos = body + 8
+                per_chunk = 0
+                for _ in range(min(entries, (box_end - body) // 12 + 1)):
+                    if pos + 12 > box_end:
+                        break
+                    per_chunk = max(per_chunk, u32(pos + 4))
+                    pos += 12
+                counts += [entries, per_chunk]
+            elif kind in (b"stco", b"co64"):
+                counts.append(u32(body + 4))
+            elif kind == b"trun":  # version/flags, sample_count
+                totals["trun"] += u32(body + 4)
+                counts.append(totals["trun"])
+            if any(c > limit for c in counts):
+                raise AudioTooLarge(f"Die Aufnahme ist zu lang (höchstens {float(max_seconds):g} s).")
+
+    walk(0, len(data), 0)
+
+
 def decode_audio(data: bytes, container: str, max_seconds: float) -> Any:
-    """Mono-float32 mit 16 kHz (wie faster_whisper.decode_audio), Abbruch nach max_seconds."""
+    """Mono-float32 mit 16 kHz (wie faster_whisper.decode_audio), Abbruch nach max_seconds.
+
+    Die Länge wird schon VOR dem Umrechnen auf 16 kHz gezählt (Samples / Abtastrate des Eingangs), und nur
+    übliche Abtastraten, höchstens zwei Kanäle und die Browser-Codecs aus CODECS sind erlaubt – sonst
+    könnte ein einzelner Rahmen mit winziger Abtastrate beim Umrechnen Gigabytes belegen.
+    """
     import av
     import numpy as np
 
+    if container == "mp4":
+        _mp4_check_tables(data, max_seconds)
     limit = int((float(max_seconds) + DURATION_GRACE) * SAMPLE_RATE)
+    max_input = float(max_seconds) + DURATION_GRACE
     resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
     chunks: list[Any] = []
     total = 0
@@ -186,11 +307,20 @@ def decode_audio(data: bytes, container: str, max_seconds: float) -> Any:
                 raise AudioTooLarge(f"Die Aufnahme ist zu lang (höchstens {float(max_seconds):g} s).")
             chunks.append(array)
 
+    too_long = AudioTooLarge(f"Die Aufnahme ist zu lang (höchstens {float(max_seconds):g} s).")
     try:
         with av.open(io.BytesIO(data), mode="r", format=container, metadata_errors="ignore") as source:
             if not source.streams.audio:
                 raise AudioInvalid("Die Datei enthält keine Tonspur.")
+            codec = source.streams.audio[0].codec_context.codec
+            codec_name = str(getattr(codec, "canonical_name", "") or getattr(codec, "name", ""))
+            if codec_name not in CODECS[container]:
+                raise AudioInvalid(
+                    f"Audio-Codec '{codec_name or 'unbekannt'}' wird nicht unterstützt "
+                    f"(erlaubt in {container}: {', '.join(sorted(CODECS[container]))})."
+                )
             frames = source.decode(audio=0)
+            seconds_in = 0.0
             while True:
                 try:
                     frame = next(frames)
@@ -198,6 +328,14 @@ def decode_audio(data: bytes, container: str, max_seconds: float) -> Any:
                     break
                 except av.error.InvalidDataError:
                     break  # abgeschnittene Aufnahme: Bisheriges verwenden
+                rate = int(frame.sample_rate or 0)
+                if not MIN_RATE <= rate <= MAX_RATE:
+                    raise AudioInvalid(f"Ungewöhnliche Abtastrate ({rate} Hz) – erlaubt sind 8–192 kHz.")
+                if frame.layout.nb_channels > MAX_CHANNELS:
+                    raise AudioInvalid("Zu viele Tonkanäle (höchstens Stereo).")
+                seconds_in += frame.samples / rate
+                if seconds_in > max_input:
+                    raise too_long
                 frame.pts = None
                 take(resampler.resample(frame))
             take(resampler.resample(None))
@@ -238,9 +376,9 @@ class STTEngine:
         if not whisper_installed():
             return (
                 "Spracheingabe ist nicht installiert (Paket faster-whisper fehlt). Install.cmd erneut starten "
-                "und die Spracheingabe aktivieren – oder im JARVIS-Ordner: uv sync --frozen --no-dev --extra voice"
+                "und dem Zusatzpaket zustimmen (oder Install.cmd -InstallVoice)."
             )
-        return None
+        return _BROKEN
 
     def check_basic(self) -> None:
         reason = self.basic_reason()
@@ -268,6 +406,9 @@ class STTEngine:
                 self._model_path()
             except STTUnavailable as exc:
                 reason = str(exc)
+            except Exception as exc:  # nie HTTP 500 für /api/voice/status (die Sprachausgabe hängt mit dran)
+                log.warning("Status der Spracheingabe nicht lesbar: %s", exc)
+                reason = f"Spracheingabe nicht verfügbar ({type(exc).__name__}: {exc})."
         return {
             "available": reason is None,
             "enabled": bool(getattr(self.settings, "enabled", False)),
@@ -382,9 +523,7 @@ def _repo_id(name: str) -> str | None:
     if "/" in name:
         return name
     try:
-        from faster_whisper import utils
-
-        return getattr(utils, "_MODELS", {}).get(name)
+        return getattr(_import_whisper("faster_whisper.utils"), "_MODELS", {}).get(name)
     except Exception:
         return None
 
@@ -407,8 +546,7 @@ def _format_size(size: int) -> str:
 
 
 def download(name: str, root: Path) -> Path:
-    from faster_whisper.utils import download_model
-
+    download_model = _import_whisper("faster_whisper.utils").download_model
     root.mkdir(parents=True, exist_ok=True)
     return Path(download_model(name, cache_dir=str(root)))
 
@@ -422,7 +560,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--download", action="store_true", help="Modell aus voice.stt.model herunterladen")
-    action.add_argument("--check", action="store_true", help="nur prüfen, ob das Modell vorhanden ist (Exit 0/1)")
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help="nur prüfen, ob das Modell vorhanden ist (Exit 0 = da, 1 = fehlt, 2 = Config, 3 = Paket fehlt, "
+        "4 = Paket nicht ladbar)",
+    )
     parser.add_argument("--config", help="Pfad zu config.yaml (Vorgabe: JARVIS_CONFIG bzw. config.yaml)")
     parser.add_argument("--state", help="state-Ordner (Vorgabe: JARVIS_STATE bzw. state im JARVIS-Ordner)")
     args = parser.parse_args(argv)
@@ -442,12 +585,16 @@ def main(argv: list[str] | None = None) -> int:
         print("config.yaml enthält keinen Abschnitt voice.stt.", file=sys.stderr)
         return 2
     root = resolve_download_root(settings, Path(args.state) if args.state else default_state_dir())
+    # Auch der Cache und die Logs von hf_xet (Download-Bibliothek von huggingface_hub) bleiben unter root –
+    # sonst landen sie in %USERPROFILE%\.cache\huggingface\xet (auch das vor dem ersten Import setzen).
+    os.environ.setdefault("HF_XET_CACHE", str(root / ".xet"))
     name = str(settings.model).strip()
     if not whisper_installed():
         print(
             "Das Paket faster-whisper ist nicht installiert (optionales Extra 'voice').\n"
-            "Im JARVIS-Ordner: uv sync --frozen --no-dev --extra voice\n"
-            "oder: .venv\\Scripts\\python.exe -m pip install --require-hashes -r requirements-voice.txt",
+            "Am einfachsten: Install.cmd erneut starten und dem Zusatzpaket zustimmen (oder Install.cmd -InstallVoice).\n"
+            "Von Hand im JARVIS-Ordner: .venv\\Scripts\\python.exe -m pip install --require-hashes "
+            "-r requirements-voice.txt",
             file=sys.stderr,
         )
         return 3
@@ -457,6 +604,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:
             print(f"Whisper-Modell '{name}' fehlt (Ordner {root}).")
             return 1
+    except WhisperBroken as exc:  # installiert, aber nicht ladbar – ein Download hilft dann nicht
+        print(str(exc), file=sys.stderr)
+        return 4
     except STTUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 2

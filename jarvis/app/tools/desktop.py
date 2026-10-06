@@ -8,13 +8,14 @@ kann nur Programm-IDs aus ``desktop.apps`` wählen.
 
 Alle Windows-Aufrufe stecken in kleinen Wrapper-Funktionen (``_send_media_key``, ``_lock_workstation``,
 ``_volume_get``/``_volume_set``/``_volume_mute``, ``_start_process``, ``_user_processes``,
-``_close_processes``, ``_focus_window``, ``_open_in_browser``), die Tests ersetzen. Jeder Wrapper
+``_close_processes``, ``_close_windows``, ``_focus_window``, ``_open_in_browser``), die Tests ersetzen. Jeder Wrapper
 verweigert auf Nicht-Windows-Systemen selbst noch einmal (Schutz der Entwicklungsmaschine). Auch die
 DNS-Abfrage für desktop_open_url (``_resolve_host``) ist ein ersetzbarer Wrapper.
 
 Quellen: Virtual-Key-Codes und Scan-Codes der Medientasten, SendInput/INPUT/KEYBDINPUT,
 LockWorkStation, SetForegroundWindow (Einschränkungen), EnumWindows, GetWindowThreadProcessId,
-ShowWindow (SW_RESTORE = 9), GetWindow (GW_OWNER = 4) laut Microsoft-Doku (learn.microsoft.com,
+ShowWindowAsync (SW_RESTORE = 9), IsHungAppWindow, GetWindow (GW_OWNER = 4), EnumChildWindows,
+PostMessage (WM_CLOSE = 0x0010) laut Microsoft-Doku (learn.microsoft.com,
 Repos MicrosoftDocs/sdk-api und MicrosoftDocs/win32); Lautstärke über pycaw 20260927
 (``AudioUtilities.GetSpeakers().EndpointVolume`` → IAudioEndpointVolume
 ``Get/SetMasterVolumeLevelScalar``, ``Get/SetMute``).
@@ -58,6 +59,11 @@ KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 SW_RESTORE = 9
 GW_OWNER = 4
+WM_CLOSE = 0x0010
+ERROR_ACCESS_DENIED = 5
+MEDIA_LOCKED = "Der PC ist gesperrt – Medientasten gehen erst nach dem Entsperren."
+# Besitzer der Fensterrahmen von Store-Apps (Rechner & Co.); das Fenster der App ist ein Kindfenster darin.
+FRAME_HOST = "applicationframehost.exe"
 
 # Hostnamen, die nur im Heimnetz existieren (Router, Geräte). Webseiten öffnen soll keine Geräte im
 # LAN per GET schalten können (z. B. WLED-HTTP-API) – außer die Domain steht in allowed_domains.
@@ -178,10 +184,17 @@ def _load_user32():  # pragma: no cover - nur unter Windows
     user32.GetWindowTextW.restype = ctypes.c_int
     user32.IsIconic.argtypes = [ctypes.c_void_p]
     user32.IsIconic.restype = wintypes.BOOL
-    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    user32.ShowWindow.restype = wintypes.BOOL
+    # ShowWindowAsync statt ShowWindow: wartet nie auf ein hängendes Programm (sdk-api showwindowasync)
+    user32.ShowWindowAsync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindowAsync.restype = wintypes.BOOL
+    user32.IsHungAppWindow.argtypes = [ctypes.c_void_p]
+    user32.IsHungAppWindow.restype = wintypes.BOOL
     user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
     user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.EnumChildWindows.argtypes = [ctypes.c_void_p, WNDENUMPROC, ctypes.c_void_p]
+    user32.EnumChildWindows.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
     return user32
 
 
@@ -206,7 +219,16 @@ def _send_media_key(vk: int, scan: int) -> None:
         item.u.ki = KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)
     sent = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
     if sent != 2:
+        # Gesperrter PC: Eingaben gehen an den Winlogon-Desktop, SendInput scheitert mit ERROR_ACCESS_DENIED.
+        if _last_error() == ERROR_ACCESS_DENIED:
+            raise ToolError(MEDIA_LOCKED)
         raise ToolError("Windows hat die Medientaste nicht angenommen.")
+
+
+def _last_error() -> int:
+    """GetLastError des letzten user32-Aufrufs (use_last_error=True); 0 außerhalb von Windows."""
+    get = getattr(ctypes, "get_last_error", None)
+    return int(get()) if get is not None else 0
 
 
 def _lock_workstation() -> bool:
@@ -249,19 +271,68 @@ def _focus_window(pids: list[int], title: str) -> str:
     if not candidates:
         return "no_window"
     hwnd = candidates[0]
+    if user32.IsHungAppWindow(hwnd):
+        return "hung"
     if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.ShowWindowAsync(hwnd, SW_RESTORE)  # nur einreihen – blockiert nie den Worker-Thread
     return "focused" if user32.SetForegroundWindow(hwnd) else "refused"
+
+
+def _window_pid(user32, hwnd) -> int:
+    pid = ctypes.c_uint32(0)
+    user32.GetWindowThreadProcessId(hwnd, ctypes.pointer(pid))
+    return int(pid.value)
+
+
+def _close_windows(pids: list[int]) -> int:
+    """WM_CLOSE an die sichtbaren Hauptfenster der Prozesse (wie ein Klick auf X). Ergebnis: Anzahl Fenster.
+
+    Store-Apps wie der Rechner (CalculatorApp.exe) haben kein eigenes Hauptfenster: Den sichtbaren Rahmen
+    besitzt ApplicationFrameHost.exe, das Fenster der App ist ein Kindfenster darin. So ein Rahmen bekommt
+    WM_CLOSE nur, wenn eines seiner Kindfenster zu einem der Prozesse gehört – nie nach Fenstertitel.
+    PostMessage wartet nicht auf das Programm (hängt es, bleibt JARVIS trotzdem bedienbar).
+    """
+    user32 = _user32()
+    wanted = {int(p) for p in pids}
+    hosts = {pid for pid, name in _user_processes() if name.lower() == FRAME_HOST}
+    targets: list[int] = []
+
+    def hosts_wanted(frame) -> bool:
+        found = []
+
+        def child(hwnd, _lparam):
+            if _window_pid(user32, hwnd) in wanted:
+                found.append(hwnd)
+                return 0
+            return 1
+
+        user32.EnumChildWindows(frame, WNDENUMPROC(child), None)
+        return bool(found)
+
+    def top(hwnd, _lparam):
+        if not hwnd or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, GW_OWNER):
+            return 1
+        pid = _window_pid(user32, hwnd)
+        if pid in wanted or (pid in hosts and hosts_wanted(hwnd)):
+            targets.append(hwnd)
+        return 1
+
+    user32.EnumWindows(WNDENUMPROC(top), None)
+    for hwnd in targets:
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    return len(targets)
 
 
 _AUDIO_EXECUTOR: ThreadPoolExecutor | None = None
 _AUDIO_LOCK = threading.Lock()
 
 
-def _com_thread_init() -> None:  # pragma: no cover - nur unter Windows
-    import comtypes  # initialisiert COM für den importierenden Thread
+def _com_thread_init() -> None:
+    """COM als MTA für den Audio-Thread (app/wincom.py): Der Thread wartet nur auf Aufträge und hat keine
+    Nachrichtenschleife – als STA bekäme er ein verstecktes Fenster, das Broadcasts anderer Programme blockiert."""
+    from app.wincom import init_mta
 
-    comtypes.CoInitialize()  # zweiter Aufruf liefert S_FALSE, schadet nicht
+    init_mta()
 
 
 def _audio_call(func):
@@ -390,11 +461,13 @@ def _soft_close(pid: int) -> None:  # pragma: no cover - nur unter Windows
         pass
 
 
-def _close_processes(pids: list[int], process_name: str, grace: float = CLOSE_GRACE_SECONDS) -> bool:
-    """Prozesse erst sanft schließen, nach ``grace`` Sekunden hart beenden. True = hart beendet.
+def _close_processes(pids: list[int], process_name: str, grace: float = CLOSE_GRACE_SECONDS) -> str:
+    """Prozesse erst sanft schließen, nach ``grace`` Sekunden hart beenden.
 
-    Vor dem Schließen wird jeder Prozess erneut geprüft (gleicher Name, gleicher Benutzer, nicht
-    JARVIS selbst) – Schutz gegen wiederverwendete PIDs.
+    Ergebnis: "closed" (von selbst beendet), "killed" (hart beendet), "killed_no_window" (kein Fenster zum
+    Schließen gefunden, hart beendet) oder "not_running". Vor dem Schließen wird jeder Prozess erneut geprüft
+    (gleicher Name, gleicher Benutzer, nicht JARVIS selbst) und unmittelbar vor jeder Schließ-Anfrage, ob es
+    noch derselbe Prozess ist (psutil vergleicht die Startzeit) – Schutz gegen wiederverwendete PIDs.
     """
     _refuse_unless_windows("Programme schließen")
     me = _current_username()
@@ -409,18 +482,24 @@ def _close_processes(pids: list[int], process_name: str, grace: float = CLOSE_GR
         except psutil.Error:
             continue
     if not procs:
-        return False
-    for proc in procs:
-        _soft_close(proc.pid)
+        return "not_running"
+    asked = _close_windows([p.pid for p in procs if p.is_running()])
+    if not asked:
+        # Kein sichtbares Fenster gefunden: taskkill ohne /F versucht es mit allen Fenstern des Prozesses.
+        for proc in procs:
+            if proc.is_running():
+                _soft_close(proc.pid)
     _gone, alive = psutil.wait_procs(procs, timeout=grace)
+    alive = [p for p in alive if p.is_running()]  # PID neu vergeben = der ursprüngliche Prozess ist weg
     for proc in alive:
         try:
-            proc.kill()
+            proc.kill()  # psutil prüft selbst noch einmal gegen wiederverwendete PIDs
         except psutil.Error:
             pass
     if alive:
         psutil.wait_procs(alive, timeout=3)
-    return bool(alive)
+        return "killed" if asked else "killed_no_window"
+    return "closed"
 
 
 def _resolve_host(host: str, timeout: float = DNS_TIMEOUT) -> list[str]:
@@ -492,6 +571,10 @@ def ip_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 LOCAL_TARGET = "Lokale oder private Adressen öffne ich nicht (Schutz der Geräte im Heimnetz)."
+# desktop.allowed_domains ist eine Positivliste – wer dort fritz.box einträgt, sperrt damit alle anderen Seiten.
+ALLOWLIST_NOTE = (
+    "Achtung: Sobald desktop.allowed_domains nicht leer ist, sind NUR noch die dort eingetragenen Domains erlaubt."
+)
 
 
 def _quote_non_ascii(text: str) -> str:
@@ -545,12 +628,15 @@ def validate_url(url: str, cfg: DesktopConfig) -> tuple[str, str]:
         explicitly_allowed = _domain_allowed(host, cfg.allowed_domains)
         if cfg.allowed_domains and not explicitly_allowed:
             allowed = ", ".join(cfg.allowed_domains)
-            raise ToolError(f"Die Domain {host} ist nicht freigegeben (erlaubt: {allowed}).")
+            raise ToolError(
+                f"Die Domain {host} ist nicht freigegeben (erlaubt: {allowed}). desktop.allowed_domains ist eine "
+                "Liste der einzig erlaubten Domains – leer ([]) = alle öffentlichen Domains."
+            )
         is_local = len(labels) < 2 or any(host == s or host.endswith("." + s) for s in LOCAL_SUFFIXES)
         if is_local and not explicitly_allowed:
             raise ToolError(
                 f"{host} ist ein Name im Heimnetz – solche Adressen öffne ich nur, wenn sie in "
-                "desktop.allowed_domains stehen."
+                f"desktop.allowed_domains stehen. {ALLOWLIST_NOTE}"
             )
         host_part = host
     netloc = host_part if port is None else f"{host_part}:{port}"
@@ -596,6 +682,10 @@ def desktop_app_start(ctx: ToolContext, p: AppParams) -> dict:
     if not app.is_configured:
         raise ToolError(f"Programm '{app.label}' ist noch nicht eingerichtet: command in config.yaml enthält TODO.")
     _refuse_unless_windows("Programme starten")
+    if _app_pids(app):
+        # Kein zweites Exemplar (kleine Modelle wiederholen Aufrufe gern) – nach vorne holen geht separat.
+        return {"status": "already_running", "id": app.id, "label": app.label,
+                "message": f"{app.label} läuft schon (nach vorne holen: „{app.label} nach vorne“)."}
     try:
         _start_process(list(app.command))
     except FileNotFoundError:
@@ -631,12 +721,13 @@ def _do_close(ctx: ToolContext, params: dict[str, Any]) -> dict:
     if not pids:
         message = f"{app.label} läuft nicht mehr."
         return {"status": "not_running", "id": app.id, "label": app.label, "message": message}
-    forced = _close_processes(pids, app.process_name, CLOSE_GRACE_SECONDS)
-    if forced:
-        message = f"{app.label} hat nicht reagiert und wurde hart beendet."
-    else:
-        message = f"{app.label} geschlossen."
-    return {"status": "killed" if forced else "closed", "id": app.id, "label": app.label, "message": message}
+    outcome = _close_processes(pids, app.process_name, CLOSE_GRACE_SECONDS)
+    status, message = {
+        "killed": ("killed", f"{app.label} hat nicht reagiert und wurde hart beendet."),
+        "killed_no_window": ("killed", f"{app.label} hatte kein Fenster zum Schließen und wurde beendet."),
+        "not_running": ("not_running", f"{app.label} läuft nicht mehr."),
+    }.get(outcome, ("closed", f"{app.label} geschlossen."))
+    return {"status": status, "id": app.id, "label": app.label, "message": message}
 
 
 pc.register_confirm_action("desktop_app_close", _do_close)
@@ -654,11 +745,16 @@ def desktop_focus(ctx: ToolContext, p: AppParams) -> dict:
     if outcome == "focused":
         return {**base, "status": "focused", "message": f"{app.label} ist im Vordergrund."}
     if outcome == "refused":
+        # Windows lässt nur das Programm im Vordergrund den Fokus wechseln – wer gerade am PC (z. B. im Browser)
+        # arbeitet, bekommt das fast immer; vom Handy klappt es meist, wenn der PC ein paar Minuten ruht.
         return {
             **base,
             "status": "refused",
-            "message": f"Windows hat den Fokuswechsel verweigert; {app.label} blinkt in der Taskleiste.",
+            "message": f"Windows hat den Fokuswechsel verweigert; {app.label} wartet in der Taskleiste "
+            "(blinkt) – dort anklicken.",
         }
+    if outcome == "hung":
+        return {**base, "status": "not_responding", "message": f"{app.label} reagiert gerade nicht."}
     return {**base, "status": "no_window", "message": f"Kein sichtbares Fenster von {app.label} gefunden."}
 
 
@@ -727,7 +823,7 @@ def check_resolved_host(host: str, cfg: DesktopConfig) -> None:
         if not ip_is_public(ip):
             raise ToolError(
                 f"{host} zeigt auf eine Adresse im Heimnetz oder auf diesen PC – solche Adressen öffne ich nur, "
-                "wenn sie in desktop.allowed_domains stehen."
+                f"wenn sie in desktop.allowed_domains stehen. {ALLOWLIST_NOTE}"
             )
 
 
@@ -751,7 +847,9 @@ def register(registry: Registry) -> None:
         "desktop_apps_list",
         "Listet die freigegebenen Programme (id, label, running). Nur diese IDs sind erlaubt.",
     )(desktop_apps_list)
-    registry.tool("desktop_app_start", "Startet ein freigegebenes Programm." + hint, AppParams)(desktop_app_start)
+    registry.tool(
+        "desktop_app_start", "Startet ein freigegebenes Programm (läuft es schon, passiert nichts)." + hint, AppParams
+    )(desktop_app_start)
     registry.tool(
         "desktop_app_close",
         "Schließt ein freigegebenes Programm. Fordert nur eine Bestätigung an; der User muss in der "
@@ -759,7 +857,10 @@ def register(registry: Registry) -> None:
         AppParams,
     )(desktop_app_close)
     registry.tool(
-        "desktop_focus", "Holt das Fenster eines freigegebenen Programms in den Vordergrund." + hint, AppParams
+        "desktop_focus",
+        "Holt das Fenster eines freigegebenen Programms in den Vordergrund (Windows verweigert das oft, während "
+        "jemand am PC arbeitet – dann blinkt es in der Taskleiste)." + hint,
+        AppParams,
     )(desktop_focus)
     registry.tool(
         "desktop_volume",

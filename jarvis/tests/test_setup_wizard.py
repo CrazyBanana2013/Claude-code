@@ -882,8 +882,9 @@ def test_info_prints_one_json_line(tmp_path, capsys):
     out = capsys.readouterr().out
     assert out.count("\n") == 1 and out.isascii()
     payload = json.loads(out)
-    assert set(payload) == {"bind", "port", "local_url", "warnings", "desktop_enabled", "vision_model", "tts_enabled",
-                            "stt_enabled", "stt_model", "stt_model_size"}
+    assert set(payload) == {"bind", "port", "local_url", "warnings", "desktop_enabled", "desktop_open_url",
+                            "desktop_apps", "vision_model", "tts_enabled", "speak_replies", "stt_enabled", "stt_model",
+                            "stt_model_size"}
     assert payload["bind"] == "0.0.0.0" and payload["port"] == 8765
     assert payload["local_url"] == "http://127.0.0.1:8765/"
     assert any("llm.model" in w for w in payload["warnings"])
@@ -897,7 +898,8 @@ def test_info_without_warnings_and_custom_bind(tmp_path, capsys):
     assert sw.main(["info", "--config", str(target)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"bind": "192.0.2.5", "port": 9000, "local_url": "http://192.0.2.5:9000/", "warnings": [],
-                       "desktop_enabled": True, "vision_model": None, "tts_enabled": True, "stt_enabled": False,
+                       "desktop_enabled": True, "desktop_open_url": True, "desktop_apps": ["Editor", "Rechner"],
+                       "vision_model": None, "tts_enabled": True, "speak_replies": True, "stt_enabled": False,
                        "stt_model": "small", "stt_model_size": "ca. 500 MB"}
 
 
@@ -1147,6 +1149,9 @@ def test_voice_choices(tmp_path):
     assert "Bitte einen dieser Namen eingeben" in out
     assert re.search(r"Sprachausgabe:\s+aus\n", out) and re.search(r"Spracheingabe:\s+an \(Whisper-Modell base\)", out)
     assert "python.exe -m app.voice.stt --download --config config.yaml" in out  # Hinweis nach dem Speichern
+    # mit Ordnerwechsel (-m app… geht nur dort) und ohne nacktes „uv sync“ (uv liegt nicht im PATH)
+    assert f'cd "{(tmp_path / "config.yaml").resolve().parent}"' in out
+    assert "uv sync" not in out and "-InstallVoice" in out
     assert "HTTPS" in out
 
 
@@ -1169,10 +1174,36 @@ def test_voice_and_other_unasked_values_are_preserved(tmp_path):
     after = read_config(tmp_path / "config.yaml")
     assert after["wled"]["base_url"] == "http://wled3.test"
     after["wled"]["base_url"] = before["wled"]["base_url"]
-    # vision.model: 'klein-vl' ist hier nicht installiert -> Vorgabe wäre gross-vl; Enter übernimmt das
-    assert after["vision"]["model"] == "gross-vl"
-    after["vision"]["model"] = before["vision"]["model"]
+    # vision.model: 'klein-vl' steht hier nicht in Ollamas Liste – Enter behält den Eintrag trotzdem
     assert after == before
+    assert "Enter behält den Eintrag" in scripted.text
+
+
+@pytest.mark.parametrize("step,section,listed", [
+    (4, "llm", [("llava:latest", 4_000_000_000, ["completion", "vision", "tools"])]),
+    (6, "vision", [("llava:latest", 4_000_000_000, ["completion", "vision"])]),
+])
+def test_enter_keeps_hand_written_model_name(tmp_path, step, section, listed):
+    """'llava' von Hand eingetragen, Ollama listet 'llava:latest': gleiches Modell – Enter ändert nichts."""
+    data = custom_existing()
+    data[section]["model"] = "llava"
+    write_yaml(tmp_path / "config.yaml", data)
+    models = listed + [("anderes-vl", 1_000_000_000, ["completion", "vision", "tools"])]
+    code, scripted, _ = run_wizard(tmp_path, ["n"] + [""] * 14, FakeNet(ollama_models=ollama_with_current() + models))
+    assert code == 0, scripted.text
+    assert read_config(tmp_path / "config.yaml")[section]["model"] == "llava"
+    assert "ist nicht installiert" not in scripted.text and "Enter behält" not in scripted.text
+
+
+def test_vision_can_be_switched_off(tmp_path):
+    data = custom_existing()
+    data["vision"]["model"] = "klein-vl"
+    write_yaml(tmp_path / "config.yaml", data)
+    answers = ["n"] + [""] * 7 + ["aus"] + [""] * 6  # Test n | WLED … Port | Vision 'aus' | Schritte 7–8, Speichern
+    code, scripted, _ = run_wizard(tmp_path, answers, FakeNet(ollama_models=ollama_with_current() + VISION_MODELS))
+    assert code == 0, scripted.text
+    assert read_config(tmp_path / "config.yaml")["vision"]["model"] == "TODO_VISIONMODELL"
+    assert "Bildschirm beschreiben aus" in scripted.text
 
 
 def test_old_config_without_new_sections_loads_and_stays_untouched(tmp_path):

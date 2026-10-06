@@ -27,7 +27,7 @@ def win(monkeypatch):
     """Windows simulieren: alle Windows-Wrapper ersetzt, jeder Aufruf wird aufgezeichnet."""
     calls = []
     state = {"volume": 0.5, "muted": False, "procs": [(101, "notepad.exe"), (102, "Notepad.exe"), (7, "other.exe")],
-             "focus": "focused", "lock": True, "forced": False}
+             "focus": "focused", "lock": True, "close": "closed"}
 
     def vset(x):
         calls.append(("volume", round(x, 4)))
@@ -41,7 +41,7 @@ def win(monkeypatch):
     monkeypatch.setattr(desktop, "_user_processes", lambda: list(state["procs"]))
     monkeypatch.setattr(desktop, "_start_process", lambda cmd: calls.append(("start", cmd)) or 4242)
     monkeypatch.setattr(desktop, "_close_processes",
-                        lambda pids, name, grace=5: calls.append(("close", sorted(pids), name)) or state["forced"])
+                        lambda pids, name, grace=5: calls.append(("close", sorted(pids), name)) or state["close"])
     monkeypatch.setattr(desktop, "_focus_window", lambda pids, title: calls.append(("focus", pids, title)) or state["focus"])
     monkeypatch.setattr(desktop, "_volume_get", lambda: (state["volume"], state["muted"]))
     monkeypatch.setattr(desktop, "_volume_set", vset)
@@ -90,10 +90,19 @@ async def test_apps_list_off_windows_does_not_scan(factory, monkeypatch):
 
 
 async def test_app_start_runs_configured_command(factory, win):
+    win.state["procs"] = [(7, "other.exe")]
     r = await run(factory, "desktop_app_start", {"app_id": "editor"})
     assert r.status_code == 200, r.text
     assert r.json()["result"]["status"] == "started"
     assert win.calls == [("start", ["notepad.exe"])]
+
+
+async def test_app_start_does_not_start_a_second_instance(factory, win):
+    """Läuft das Programm schon (Editor im Mock), startet kein weiteres Exemplar – auch nicht bei Wiederholung."""
+    for _ in range(3):
+        res = (await run(factory, "desktop_app_start", {"app_id": "editor"})).json()["result"]
+        assert res["status"] == "already_running" and "läuft schon" in res["message"]
+    assert win.calls == []
 
 
 @pytest.mark.parametrize("app_id", ["notepad", "cmd", "powershell", "../editor", "EDITOR; calc", "x" * 33])
@@ -105,6 +114,7 @@ async def test_unknown_app_ids_are_rejected(factory, win, app_id):
 
 
 async def test_app_id_is_case_insensitive(factory, win):
+    win.state["procs"] = []
     r = await run(factory, "desktop_app_start", {"app_id": " Editor "})
     assert r.status_code == 200 and win.calls == [("start", ["notepad.exe"])]
 
@@ -121,7 +131,7 @@ async def test_app_start_program_missing(factory, win, monkeypatch):
         raise FileNotFoundError(2, "nicht gefunden")
 
     monkeypatch.setattr(desktop, "_start_process", missing)
-    r = await run(factory, "desktop_app_start", {"app_id": "editor"})
+    r = await run(factory, "desktop_app_start", {"app_id": "rechner"})
     assert r.status_code == 400 and "nicht gefunden" in r.json()["error"]
 
 
@@ -148,13 +158,19 @@ async def test_app_close_runs_after_confirm_once(factory, win):
     assert len(win.calls) == 1  # kein Herunterfahren, kein zweites Schließen
 
 
-async def test_app_close_reports_forced_kill(factory, win):
-    win.state["forced"] = True
+@pytest.mark.parametrize("outcome,status,text_part", [
+    ("killed", "killed", "hat nicht reagiert und wurde hart beendet"),
+    # Store-App/Konsolenprogramm ohne eigenes Fenster: nicht „hat nicht reagiert“ behaupten
+    ("killed_no_window", "killed", "hatte kein Fenster zum Schließen"),
+    ("not_running", "not_running", "läuft nicht mehr"),
+])
+async def test_app_close_reports_outcome(factory, win, outcome, status, text_part):
+    win.state["close"] = outcome
     app, token = factory()
     async with client_for(app, token=token) as c:
         cid = (await c.post("/api/tools/desktop_app_close", json={"app_id": "editor"})).json()["result"]["confirm_id"]
         res = (await c.post(f"/api/confirm/{cid}")).json()["result"]
-    assert res["status"] == "killed" and "hart beendet" in res["message"]
+    assert res["status"] == status and text_part in res["message"]
 
 
 async def test_app_close_not_running_needs_no_confirmation(factory, win):
@@ -220,8 +236,9 @@ async def test_confirm_action_revalidates_app_id(factory, win):
 
 @pytest.mark.parametrize("outcome,status,text_part", [
     ("focused", "focused", "Vordergrund"),
-    ("refused", "refused", "verweigert"),
+    ("refused", "refused", "wartet in der Taskleiste"),
     ("no_window", "no_window", "Kein sichtbares Fenster"),
+    ("hung", "not_responding", "reagiert gerade nicht"),
 ])
 async def test_focus(factory, win, outcome, status, text_part):
     win.state["focus"] = outcome
@@ -460,6 +477,21 @@ async def test_open_url_can_be_disabled(factory, win):
     assert win.calls == []
 
 
+def test_allowlist_trap_is_explained_where_it_is_suggested():
+    """Wer wegen fritz.box die Liste füllt, sperrt alle anderen Seiten – das muss die Meldung sagen."""
+    cfg = parse_config(example_config_dict()).desktop
+    with pytest.raises(ToolError) as exc:
+        desktop.validate_url("http://fritz.box", cfg)
+    assert "allowed_domains" in str(exc.value) and "NUR noch die dort eingetragenen" in str(exc.value)
+    data = example_config_dict()
+    data["desktop"]["allowed_domains"] = ["fritz.box"]
+    only_fritz = parse_config(data).desktop
+    assert desktop.validate_url("http://fritz.box", only_fritz)[1] == "fritz.box"
+    with pytest.raises(ToolError) as exc:
+        desktop.validate_url("https://wikipedia.org", only_fritz)
+    assert "einzig erlaubten" in str(exc.value) and "leer ([]) = alle" in str(exc.value)
+
+
 def test_validate_url_messages():
     cfg = parse_config(example_config_dict()).desktop
     with pytest.raises(ToolError, match="Nur http- und https"):
@@ -504,6 +536,7 @@ async def test_non_windows_refuses_cleanly(factory, monkeypatch, tool, args):
     lambda: desktop._send_media_key(0xB3, 0x22),
     lambda: desktop._lock_workstation(),
     lambda: desktop._focus_window([1], "x"),
+    lambda: desktop._close_windows([1]),
     lambda: desktop._volume_get(),
     lambda: desktop._volume_set(0.5),
     lambda: desktop._volume_mute(True),
@@ -598,14 +631,17 @@ def test_send_media_key_rejects_other_virtual_keys(monkeypatch):
 class FakeUser32:
     """Nachbau der benutzten user32-Funktionen. windows: (hwnd, pid, sichtbar, owner, titel, minimiert)."""
 
-    def __init__(self, windows=(), foreground_ok=True, send_ok=True, lock_ok=True):
+    def __init__(self, windows=(), foreground_ok=True, send_ok=True, lock_ok=True, children=None, hung=()):
         self.windows = list(windows)
         self.foreground_ok = foreground_ok
         self.send_ok = send_ok
         self.lock_ok = lock_ok
+        self.children = dict(children or {})  # hwnd -> [(child_hwnd, pid)]
+        self.hung = set(hung)
         self.sent = []
         self.shown = []
         self.foreground = []
+        self.posted = []
         self.locked = 0
 
     def _win(self, hwnd):
@@ -633,8 +669,22 @@ class FakeUser32:
         return self._win(hwnd)[3]
 
     def GetWindowThreadProcessId(self, hwnd, pid_ptr):
-        pid_ptr.contents.value = self._win(hwnd)[1]
+        child_pids = {c: pid for kids in self.children.values() for c, pid in kids}
+        pid_ptr.contents.value = child_pids[hwnd] if hwnd in child_pids else self._win(hwnd)[1]
         return 1
+
+    def EnumChildWindows(self, parent, callback, _lparam):
+        for child, _pid in self.children.get(parent, []):
+            if not callback(child, None):
+                return 0
+        return 1
+
+    def PostMessageW(self, hwnd, msg, wparam, lparam):
+        self.posted.append((hwnd, msg, wparam, lparam))
+        return 1
+
+    def IsHungAppWindow(self, hwnd):
+        return hwnd in self.hung
 
     def GetWindowTextLengthW(self, hwnd):
         return len(self._win(hwnd)[4])
@@ -646,7 +696,10 @@ class FakeUser32:
     def IsIconic(self, hwnd):
         return self._win(hwnd)[5]
 
-    def ShowWindow(self, hwnd, cmd):
+    def ShowWindow(self, hwnd, cmd):  # wartet auf hängende Programme – darf JARVIS nicht benutzen
+        raise AssertionError("ShowWindow statt ShowWindowAsync")
+
+    def ShowWindowAsync(self, hwnd, cmd):
         self.shown.append((hwnd, cmd))
         return 1
 
@@ -685,10 +738,19 @@ def test_send_media_key_uses_sendinput(fake_user32):
     assert events == [(1, 0xB3, 0x22, 0x0001), (1, 0xB3, 0x22, 0x0001 | 0x0002)]
 
 
-def test_send_media_key_reports_failure(fake_user32):
+def test_send_media_key_reports_failure(fake_user32, monkeypatch):
     fake_user32(send_ok=False)
+    monkeypatch.setattr(desktop, "_last_error", lambda: 87)
     with pytest.raises(ToolError, match="nicht angenommen"):
         desktop._send_media_key(0xB0, 0x19)
+
+
+def test_send_media_key_on_locked_pc_says_so(fake_user32, monkeypatch):
+    """Gesperrter PC: SendInput scheitert mit ERROR_ACCESS_DENIED (Eingaben gehen an den Winlogon-Desktop)."""
+    fake_user32(send_ok=False)
+    monkeypatch.setattr(desktop, "_last_error", lambda: desktop.ERROR_ACCESS_DENIED)
+    with pytest.raises(ToolError, match="gesperrt – Medientasten gehen erst nach dem Entsperren"):
+        desktop._send_media_key(0xB3, 0x22)
 
 
 def test_lock_workstation(fake_user32):
@@ -714,6 +776,36 @@ def test_focus_falls_back_to_title(fake_user32):
     fake = fake_user32(windows=[(1, 500, True, None, "Firefox", False), (2, 600, True, None, "Rechner", False)])
     assert desktop._focus_window([101], "rechner") == "focused"
     assert fake.foreground == [2] and fake.shown == []
+
+
+def test_focus_skips_hung_window_without_blocking(fake_user32):
+    fake = fake_user32(windows=[(4, 101, True, None, "Editor", True)], hung={4})
+    assert desktop._focus_window([101], "Editor") == "hung"
+    assert fake.shown == [] and fake.foreground == []
+
+
+def test_close_windows_posts_wm_close_to_main_and_store_app_frames(fake_user32, monkeypatch):
+    """Store-App (Rechner): Der Rahmen gehört ApplicationFrameHost, das App-Fenster ist ein Kindfenster."""
+    monkeypatch.setattr(desktop, "_user_processes", lambda: [(900, "ApplicationFrameHost.exe"), (101, "x.exe")])
+    fake = fake_user32(
+        windows=[
+            (1, 101, True, None, "Unbenannt – Editor", False),  # Hauptfenster des Prozesses
+            (2, 101, False, None, "versteckt", False),
+            (3, 101, True, 1, "Dialog (owned)", False),
+            (4, 900, True, None, "Rechner", False),  # Rahmen mit Kindfenster von PID 101
+            (5, 900, True, None, "Einstellungen", False),  # Rahmen einer anderen Store-App
+            (6, 500, True, None, "Rechner – Wikipedia", False),  # fremdes Programm mit passendem Titel
+        ],
+        children={4: [(41, 900), (42, 101)], 5: [(51, 900), (52, 777)]},
+    )
+    assert desktop._close_windows([101]) == 2
+    assert fake.posted == [(1, desktop.WM_CLOSE, 0, 0), (4, desktop.WM_CLOSE, 0, 0)]
+
+
+def test_close_windows_without_window(fake_user32, monkeypatch):
+    monkeypatch.setattr(desktop, "_user_processes", lambda: [])
+    fake = fake_user32(windows=[(6, 500, True, None, "Rechner", False)])
+    assert desktop._close_windows([101]) == 0 and fake.posted == []
 
 
 def test_focus_refused_and_no_window(fake_user32):
@@ -788,31 +880,60 @@ def test_user_processes_lists_own_user_without_jarvis(monkeypatch, sleeper):
 
 
 def test_close_processes_soft_then_hard(monkeypatch, sleeper):
+    """Kein Fenster gefunden → taskkill ohne /F (hier SIGTERM), nach grace hart."""
     monkeypatch.setattr(desktop, "is_windows", lambda: True)
+    monkeypatch.setattr(desktop, "_close_windows", lambda pids: 0)
     soft = []
     monkeypatch.setattr(desktop, "_soft_close", lambda pid: soft.append(pid) or os.kill(pid, 15))
     polite = sleeper()
     name = psutil.Process(polite.pid).name()
-    assert desktop._close_processes([polite.pid], name, grace=3) is False
+    assert desktop._close_processes([polite.pid], name, grace=3) == "closed"
     assert soft == [polite.pid]
     assert polite.wait(timeout=5) is not None
 
     stubborn = sleeper(ignore_term=True)
     soft.clear()
-    assert desktop._close_processes([stubborn.pid], name, grace=0.3) is True
+    assert desktop._close_processes([stubborn.pid], name, grace=0.3) == "killed_no_window"
     assert soft == [stubborn.pid]
     assert stubborn.wait(timeout=5) is not None
 
 
-def test_close_processes_never_touches_jarvis_or_other_names(monkeypatch, sleeper):
+def test_close_processes_prefers_window_close(monkeypatch, sleeper):
+    """Fenster gefunden (z. B. Rahmen einer Store-App) → WM_CLOSE statt taskkill; bleibt er, dann hart."""
     monkeypatch.setattr(desktop, "is_windows", lambda: True)
-    soft = []
+    asked = []
+    monkeypatch.setattr(desktop, "_close_windows", lambda pids: asked.append(sorted(pids)) or os.kill(pids[0], 15) or 1)
+    monkeypatch.setattr(desktop, "_soft_close", lambda pid: pytest.fail("taskkill trotz gefundenem Fenster"))
+    polite = sleeper()
+    name = psutil.Process(polite.pid).name()
+    assert desktop._close_processes([polite.pid], name, grace=3) == "closed" and asked == [[polite.pid]]
+    stubborn = sleeper(ignore_term=True)
+    assert desktop._close_processes([stubborn.pid], name, grace=0.3) == "killed"
+    assert stubborn.wait(timeout=5) is not None
+
+
+def test_close_processes_rechecks_identity_right_before_closing(monkeypatch, sleeper):
+    """PID inzwischen neu vergeben (is_running vergleicht die Startzeit) → keine Schließ-Anfrage an den Neuen."""
+    monkeypatch.setattr(desktop, "is_windows", lambda: True)
+    asked, soft = [], []
+    monkeypatch.setattr(desktop, "_close_windows", lambda pids: asked.append(list(pids)) or 0)
     monkeypatch.setattr(desktop, "_soft_close", soft.append)
     child = sleeper()
+    monkeypatch.setattr(psutil.Process, "is_running", lambda self: False)
+    assert desktop._close_processes([child.pid], psutil.Process(child.pid).name(), grace=0.1) == "closed"
+    assert asked == [[]] and soft == [] and child.poll() is None
+
+
+def test_close_processes_never_touches_jarvis_or_other_names(monkeypatch, sleeper):
+    monkeypatch.setattr(desktop, "is_windows", lambda: True)
+    soft, asked = [], []
+    monkeypatch.setattr(desktop, "_soft_close", soft.append)
+    monkeypatch.setattr(desktop, "_close_windows", lambda pids: asked.append(pids) or 0)
+    child = sleeper()
     me = psutil.Process()
-    assert desktop._close_processes([os.getpid(), me.ppid()], me.name(), grace=0.1) is False
-    assert desktop._close_processes([child.pid], "anderer-name.exe", grace=0.1) is False
-    assert soft == [] and child.poll() is None
+    assert desktop._close_processes([os.getpid(), me.ppid()], me.name(), grace=0.1) == "not_running"
+    assert desktop._close_processes([child.pid], "anderer-name.exe", grace=0.1) == "not_running"
+    assert soft == [] and asked == [] and child.poll() is None
 
 
 # --------------------------------------------------------------------------------------------
@@ -845,3 +966,42 @@ def test_audio_errors_become_tool_errors(monkeypatch):
         desktop._audio_call(broken)
     assert desktop._audio_call(lambda: 42) == 42
     desktop._AUDIO_EXECUTOR.shutdown(wait=True)
+
+
+def test_com_worker_threads_use_mta(monkeypatch):
+    """Audio-Thread als COM-MTA: kein verstecktes STA-Fenster, das ohne Nachrichtenschleife Broadcasts blockiert."""
+    from app import wincom
+
+    calls = []
+    monkeypatch.setattr(wincom, "init_mta", lambda: calls.append("mta"))
+    desktop._com_thread_init()
+    assert calls == ["mta"]
+
+
+def test_init_mta_sets_flags_before_first_comtypes_import(monkeypatch):
+    import importlib.abc
+    import importlib.machinery
+
+    from app import wincom
+
+    seen = {}
+
+    class Loader(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            seen["flags_at_import"] = getattr(sys, "coinit_flags", None)  # comtypes initialisiert COM hier
+            module.COINIT_MULTITHREADED = 0
+            module.CoInitializeEx = lambda flags=None: seen.setdefault("init", []).append(flags)
+
+    class Finder(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            return importlib.machinery.ModuleSpec(name, Loader()) if name == "comtypes" else None
+
+    monkeypatch.delitem(sys.modules, "comtypes", raising=False)
+    monkeypatch.setattr(sys, "coinit_flags", 2, raising=False)  # wäre STA
+    monkeypatch.setattr(sys, "meta_path", [Finder(), *sys.meta_path])
+    module = wincom.init_mta()
+    assert seen == {"flags_at_import": 0, "init": [0]} and module is sys.modules["comtypes"]
+    monkeypatch.delitem(sys.modules, "comtypes")

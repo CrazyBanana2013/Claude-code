@@ -68,6 +68,8 @@ def test_main_writes_pid_during_run_and_removes_it(env, monkeypatch):
     assert seen["data"]["pid"] == os.getpid()
     assert seen["data"]["executable"] == sys.executable
     assert seen["kwargs"]["port"] == 8765
+    # X-Forwarded-For (tailscale serve) nie übernehmen – IP-Filter und Sperre sehen die echte TCP-Quelle.
+    assert seen["kwargs"]["proxy_headers"] is False
     assert not env.exists()
 
 

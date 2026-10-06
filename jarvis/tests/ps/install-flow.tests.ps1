@@ -56,8 +56,9 @@ try {
         Assert-True ($r.Output -match '\[11/11\]') 'alle 11 Schritte'
         Assert-True ($r.Output -match '\[7/11\] Spracheingabe \(optional\)') 'Schritt Spracheingabe'
         Assert-True ($r.Output -match 'Spracheingabe ist aus') 'Spracheingabe aus (Vorgabe) - nichts geladen'
-        Assert-True ($r.Output -match 'Stimme:\s+Sprachausgabe an, Spracheingabe aus') ('Zusammenfassung Stimme: ' + $r.Output)
+        Assert-True ($r.Output -match 'Stimme:\s+Sprachausgabe an \(liest jede Chat-Antwort an den PC-Lautsprechern vor\), Spracheingabe aus') ('Zusammenfassung Stimme: ' + $r.Output)
         Assert-True ($r.Output -match 'Bildschirm:\s+nicht eingerichtet') 'Zusammenfassung Bildschirm'
+        Assert-True ($r.Output -match 'PC-Steuerung:\s+an \(Programme: Editor, Rechner; Webseiten oeffnen an\)') ('Zusammenfassung PC-Steuerung: ' + $r.Output)
         Assert-True ($r.Output -match 'New-NetFirewallRule') 'Firewall-Befehle angezeigt'
         Assert-True ($r.Output -match 'Niemals Port 8765') 'Warnung Portfreigabe'
         $m = Read-JarvisManifest $t
@@ -114,6 +115,8 @@ try {
             if ($r.ExitCode -ne 0) { Write-TestOutput 'install.ps1 (alte config.yaml)' $r.Output }
             Assert-Equal 0 $r.ExitCode 'Exitcode'
             Assert-True ($r.Output -match 'Neu: Bildschirm beschreiben, PC-Steuerung und Stimme') ('Hinweis: ' + $r.Output)
+            Assert-True ($r.Output -match 'Ohne Anpassung gelten die Vorgaben: PC-Steuerung an') 'Hinweis nennt die Vorgaben'
+            Assert-True ($r.Output -match 'liest jede Chat-Antwort an den PC-Lautsprechern vor') 'Hinweis nennt das Vorlesen'
             Assert-True ($r.Output -match 'config.yaml ist gueltig') 'alte Datei gilt weiter'
             Assert-True ($r.Output -match 'Spracheingabe ist aus') 'Vorgabe: Spracheingabe aus'
         } finally {
@@ -134,6 +137,8 @@ try {
             Assert-True ($r.Output -match 'mit -Yes wird nichts geladen; dafuer -InstallVoice') 'keine Zustimmung mit -Yes'
             Assert-True ($r.Output -match 'Spracheingabe an, aber das Zusatzpaket fehlt') 'Zusammenfassung'
             Assert-True ($r.Output -match 'Abschnitt 12 "Spracheingabe am Handy \(Tailscale HTTPS\)"') 'Hinweis HTTPS fuers Handy-Mikrofon'
+            Assert-True ($r.Output -match 'tailscale serve --bg 8765') ('genauer Befehl mit dem Port: ' + $r.Output)
+            Assert-True ($r.Output -match 'in wake\.html eintragen') 'Hinweis auf wake.html'
             Assert-Equal 0 @(Get-JarvisManifestList (Read-JarvisManifest $t) 'python_extras').Count 'nichts installiert'
             $py = Get-JarvisVenvPython -Target $t
             $probe = Invoke-JarvisCapture -FilePath $py -ArgumentList @('-c', 'import importlib.util as u; print(u.find_spec("faster_whisper") is None)')

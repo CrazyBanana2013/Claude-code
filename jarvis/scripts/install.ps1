@@ -66,6 +66,18 @@ function Test-InstallerPreparedError {
         [string]$ErrorRecord.FullyQualifiedErrorId -eq [string]$ex.Message)
 }
 
+function Get-InstallDesktopSummary {
+    # "an (Programme: Editor, Rechner; Webseiten oeffnen an)" aus "setup_wizard info".
+    param($Info)
+    if ($Info.desktop_enabled -ne $true) { return 'aus (desktop.enabled in config.yaml)' }
+    $apps = @($Info.desktop_apps | Where-Object { $_ })
+    $list = 'keine'
+    if ($apps.Count -gt 0) { $list = ($apps -join ', ') }
+    $web = 'aus'
+    if ($Info.desktop_open_url -eq $true) { $web = 'an' }
+    return ('an (Programme: {0}; Webseiten oeffnen {1})' -f $list, $web)
+}
+
 function Write-InstallSummary {
     param([string]$LocalUrl, [int]$Port, [string]$Bind, [string[]]$Warnings, [bool]$Running, [bool]$StartTried,
         [bool]$OtherServer, [bool]$TokenCreated, $Info, [string]$VoiceState)
@@ -114,21 +126,28 @@ function Write-InstallSummary {
         Write-Host ('Modell waehlen:    "{0}" "{1}"' -f (Get-JarvisVenvPython -Target $script:Target), (Join-Path (Join-Path $script:Target 'scripts') 'pick_model.py'))
     }
     if ($Info) {
+        Write-Host ('PC-Steuerung:      {0}' -f (Get-InstallDesktopSummary $Info))
         $vision = 'nicht eingerichtet (README, Abschnitt 10 "Bildschirm beschreiben")'
         if ($Info.vision_model) { $vision = 'Vision-Modell ' + [string]$Info.vision_model }
         Write-Host ('Bildschirm:        {0}' -f $vision)
         $tts = 'aus'
-        if ($Info.tts_enabled -eq $true) { $tts = 'an' }
+        if ($Info.tts_enabled -eq $true) {
+            $tts = 'an'
+            if ($Info.speak_replies -eq $true) { $tts = 'an (liest jede Chat-Antwort an den PC-Lautsprechern vor)' }
+        }
         $stt = 'aus'
         if ($Info.stt_enabled -eq $true) {
             $stt = 'an (Whisper-Modell {0})' -f $Info.stt_model
             if ($VoiceState -eq 'no-package') { $stt = 'an, aber das Zusatzpaket fehlt (Install.cmd erneut starten)' }
             if ($VoiceState -eq 'no-model') { $stt = 'an, aber das Whisper-Modell fehlt (siehe Schritt 7)' }
+            if ($VoiceState -eq 'broken') { $stt = 'an, aber faster-whisper laesst sich nicht laden (Visual C++, siehe Schritt 7)' }
             if ($VoiceState -eq 'error') { $stt = 'an, aber nicht bereit (siehe Schritt 7)' }
         }
         Write-Host ('Stimme:            Sprachausgabe {0}, Spracheingabe {1}' -f $tts, $stt)
         if ($Info.stt_enabled -eq $true) {
-            Write-Host 'Mikrofon am Handy: geht nur ueber HTTPS - README, Abschnitt 12 "Spracheingabe am Handy (Tailscale HTTPS)".'
+            Write-Host ('Mikrofon am Handy: geht nur ueber HTTPS - einmalig am PC (normale PowerShell): tailscale serve --bg {0}' -f $Port)
+            Write-Host '                   dann am Handy die https://<pc>.<tailnet>.ts.net/-Adresse oeffnen (auch als JARVIS-Adresse'
+            Write-Host '                   in wake.html eintragen) - README, Abschnitt 12 "Spracheingabe am Handy (Tailscale HTTPS)".'
         }
     }
     if (-not $Running) {
@@ -359,7 +378,10 @@ try {
         Write-JarvisInfo 'config.yaml ist vorhanden und bleibt erhalten.'
         if (-not (Test-JarvisConfigHasSection -Path $configPath -Name 'voice')) {
             Write-JarvisInfo ('Neu: Bildschirm beschreiben, PC-Steuerung und Stimme - einrichten mit "Konfiguration ' +
-                'jetzt anpassen?" = j (Schritte 6 bis 8 des Assistenten). Ohne Anpassung gelten die Vorgaben.')
+                'jetzt anpassen?" = j (Schritte 6 bis 8 des Assistenten). Ohne Anpassung gelten die Vorgaben: ' +
+                'PC-Steuerung an (Programme Editor und Rechner, Lautstaerke, Medientasten, Sperren, Webseiten oeffnen), ' +
+                'Sprachausgabe an (liest jede Chat-Antwort an den PC-Lautsprechern vor - auch fuer Befehle vom Handy), ' +
+                'Spracheingabe aus, Bildschirm beschreiben erst mit Vision-Modell.')
         }
         $adjust = $false
         if (-not $Yes) { $adjust = Read-JarvisYesNo 'Konfiguration jetzt anpassen?' -Default $false }

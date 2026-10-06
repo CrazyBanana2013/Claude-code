@@ -333,13 +333,15 @@ class FakeSpVoice:
 
 @pytest.fixture
 def fake_comtypes(monkeypatch):
-    record = {"init": [], "uninit": [], "created": []}
+    record = {"init": [], "uninit": [], "created": [], "flags": []}
+    monkeypatch.setattr(sys, "coinit_flags", 2, raising=False)  # STA – init_mta muss das überschreiben
     voice = FakeSpVoice([ZIRA, HEDDA])
     module = types.ModuleType("comtypes")
     client = types.ModuleType("comtypes.client")
 
     def co_init(flags=None):
         record["init"].append(threading.current_thread().name)
+        record["flags"].append(flags)
 
     def co_uninit():
         record["uninit"].append(threading.current_thread().name)
@@ -376,6 +378,8 @@ def test_sapi_backend_open_speak_close(fake_comtypes):
     assert voice.speak_calls[-1][0] == "" and voice.speak_calls[-1][1] & tts.SVSF_PURGE_BEFORE_SPEAK
     assert len(fake_comtypes["init"]) == len(fake_comtypes["uninit"]) == 1
     assert backend._voice is None
+    # COM als MTA (COINIT_MULTITHREADED = 0): kein verstecktes STA-Fenster ohne Nachrichtenschleife
+    assert fake_comtypes["flags"] == [0] and sys.coinit_flags == 0
 
 
 @pytest.mark.parametrize(

@@ -33,9 +33,26 @@ class VoiceService:
         return cls(TTSEngine(tts_cfg), STTEngine(stt_cfg, resolve_download_root(stt_cfg, state_dir)))
 
     def status(self) -> dict:
-        """Blockiert evtl. kurz (Sprach-Thread starten, Modelldateien prüfen) – im Thread aufrufen."""
-        self.tts.warm_up()
-        return {"tts": self.tts.status(), "stt": self.stt.status()}
+        """Blockiert evtl. kurz (Sprach-Thread starten, Modelldateien prüfen) – im Thread aufrufen.
+
+        Jeder Teil für sich: Ein Fehler der Spracheingabe (z. B. eine fehlende DLL) darf den Status der
+        Sprachausgabe nicht mitreißen – und umgekehrt.
+        """
+        return {"tts": self._part(self.tts, warm_up=True), "stt": self._part(self.stt)}
+
+    @staticmethod
+    def _part(engine: Any, warm_up: bool = False) -> dict:
+        try:
+            if warm_up:
+                engine.warm_up()
+            return engine.status()
+        except Exception as exc:
+            settings = getattr(engine, "settings", None)
+            return {
+                "available": False,
+                "enabled": bool(getattr(settings, "enabled", False)),
+                "reason": f"Status nicht lesbar ({type(exc).__name__}: {exc}).",
+            }
 
     def close(self) -> None:
         self.tts.close()

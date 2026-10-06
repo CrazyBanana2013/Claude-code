@@ -85,14 +85,27 @@ class Lockout:
 
 
 class TokenAuth:
-    """FastAPI-Dependency: verlangt `Authorization: Bearer <token>`."""
+    """FastAPI-Dependency: verlangt `Authorization: Bearer <token>`.
+
+    - Nach MAX_FAILURES falschen Tokens ist die Absender-IP LOCKOUT_SECONDS gesperrt: Jede Anfrage MIT Token
+      bekommt dann 429, ohne dass der Token überhaupt verglichen wird (sonst könnte man während der Sperre
+      weiter raten). Die Sperre verlängert sich durch weitere Versuche nicht.
+    - Anfragen ganz ohne Authorization-Header bekommen immer 401 und zählen nicht als Fehlversuch: Die schickt
+      z. B. eine fremde Webseite per <img src="http://127.0.0.1:8765/api/…"> – damit soll niemand den User
+      aussperren können. Raten kann man ohne Token ohnehin nicht.
+    - async: Die Prüfung blockiert nicht und braucht deshalb keinen Thread aus dem Pool (den sonst z. B.
+      viele gleichzeitige Spracherkennungen belegen könnten).
+    """
 
     def __init__(self, token: str, lockout: Lockout | None = None) -> None:
         self._token = token.encode()
         self.lockout = lockout or Lockout()
 
-    def __call__(self, request: Request) -> None:
+    async def __call__(self, request: Request) -> None:
         ip = request.client.host if request.client else "unbekannt"
+        header = request.headers.get("authorization", "")
+        if not header.strip():
+            raise HTTPException(status_code=401, detail="Token fehlt.", headers={"WWW-Authenticate": "Bearer"})
         left = self.lockout.remaining(ip)
         if left > 0:
             raise HTTPException(
@@ -100,20 +113,14 @@ class TokenAuth:
                 detail=f"Zu viele Fehlversuche. Gesperrt für {int(left) + 1} s.",
                 headers={"Retry-After": str(int(left) + 1)},
             )
-        header = request.headers.get("authorization", "")
         scheme, _, supplied = header.partition(" ")
-        if scheme.lower() != "bearer" or not supplied:
-            self.lockout.fail(ip)
-            raise HTTPException(
-                status_code=401,
-                detail="Token fehlt.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if not hmac.compare_digest(supplied.strip().encode(), self._token):
-            self.lockout.fail(ip)
-            raise HTTPException(
-                status_code=401,
-                detail="Token ungültig.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        self.lockout.success(ip)
+        well_formed = scheme.lower() == "bearer" and bool(supplied.strip())
+        if well_formed and hmac.compare_digest(supplied.strip().encode(), self._token):
+            self.lockout.success(ip)
+            return
+        self.lockout.fail(ip)
+        raise HTTPException(
+            status_code=401,
+            detail="Token ungültig." if well_formed else "Token fehlt.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

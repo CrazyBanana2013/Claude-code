@@ -393,3 +393,57 @@ async def test_lifespan_closes_tts_worker(make_app, windows):
         pass
     assert not thread.is_alive()
     assert windows.calls[-1] == ("close",)
+
+
+# --- Belastung: Spracherkennung blockiert nie die übrigen Routen ------------------------------
+@needs_audio
+async def test_stt_flood_gets_503_without_starving_other_routes(make_app, monkeypatch, tmp_path):
+    """Eine Erkennung läuft, eine wartet – weitere sofort 503 (vor dem Lesen des Uploads). Die Token-Prüfung
+    und /api/tools brauchen keinen Thread aus dem Pool, den die Spracherkennung belegt."""
+    from tests.test_voice_stt import FakeModel
+
+    model = FakeModel(delay=0.6)
+    install_fake_whisper(monkeypatch, tmp_path, model)
+    app, token = make_app(STT_ON)
+    data = make_audio(seconds=0.5)
+    async with client_for(app, token=token) as c:
+        async def upload():
+            return (await c.post("/api/voice/stt", files=audio_files(data))).status_code
+
+        async def tools():
+            await asyncio.sleep(0.15)
+            start = time.monotonic()
+            r = await c.get("/api/tools")
+            return r.status_code, time.monotonic() - start
+
+        *codes, (tools_status, tools_time) = await asyncio.gather(*[upload() for _ in range(8)], tools())
+    assert sorted(codes) == [200, 200] + [503] * 6
+    assert model.max_active == 1
+    assert tools_status == 200 and tools_time < 0.5
+
+
+async def test_status_survives_broken_stt(make_app, windows, monkeypatch):
+    """Ein Fehler der Spracheingabe (z. B. DLL) macht /api/voice/status nicht zu HTTP 500 – TTS bleibt sichtbar."""
+    app, token = make_app(STT_ON)
+    monkeypatch.setattr(stt, "whisper_installed", lambda: True)
+
+    def broken(settings, root):
+        raise FileNotFoundError("Could not find module 'ctranslate2.dll'")
+
+    monkeypatch.setattr(stt, "locate_model", broken)
+    async with client_for(app, token=token) as c:
+        r = await c.get("/api/voice/status")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tts"]["available"] is True and body["tts"]["voice"]
+    assert body["stt"]["available"] is False and "ctranslate2.dll" in body["stt"]["reason"]
+
+
+async def test_status_survives_any_part_failure(make_app, monkeypatch):
+    app, token = make_app()
+    monkeypatch.setattr(app.state.voice.stt, "status", lambda: (_ for _ in ()).throw(RuntimeError("kaputt")))
+    async with client_for(app, token=token) as c:
+        r = await c.get("/api/voice/status")
+    assert r.status_code == 200
+    assert r.json()["stt"]["available"] is False and "kaputt" in r.json()["stt"]["reason"]
+    assert "reason" in r.json()["tts"]

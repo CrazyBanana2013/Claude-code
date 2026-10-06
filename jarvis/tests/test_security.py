@@ -55,12 +55,78 @@ async def test_lockout_after_five_failures(factory):
         r = await bad.get("/api/tools")
         assert r.status_code == 429
         assert "Retry-After" in r.headers
-    # Auch der richtige Token hilft während der Sperre nicht …
+    # Während der Sperre wird gar nicht verglichen – auch der richtige Token bekommt 429 (kein Weiterraten) …
     async with client_for(app, ip="192.168.1.77", token=token) as good:
         assert (await good.get("/api/tools")).status_code == 429
-    # … aber andere IPs sind nicht betroffen.
-    async with client_for(app, ip="192.168.1.78", token=token) as other:
-        assert (await other.get("/api/tools")).status_code == 200
+    # … und andere IPs sind nicht betroffen.
+    async with client_for(app, ip="192.168.1.78", token="y" * 43) as other:
+        assert (await other.get("/api/tools")).status_code == 401
+
+
+async def test_lockout_does_not_extend_and_expires(factory):
+    """Weitere Versuche während der Sperre verlängern sie nicht; nach 60 s kommt der richtige Token durch."""
+
+    app, token = factory()
+    now = [0.0]
+    app.state.auth.lockout = Lockout(clock=lambda: now[0])
+    async with client_for(app, ip="127.0.0.1", token="x" * 43) as attacker:
+        assert [(await attacker.get("/api/tools")).status_code for _ in range(5)] == [401] * 5
+        now[0] = 59.0
+        for _ in range(20):
+            assert (await attacker.get("/api/tools")).status_code == 429
+    now[0] = 60.5
+    async with client_for(app, ip="127.0.0.1", token=token) as owner:
+        assert (await owner.get("/api/tools")).status_code == 200
+
+
+async def test_requests_without_token_do_not_count_as_failures(factory):
+    """Eine fremde Webseite (<img src=http://127.0.0.1:8765/api/…>) schickt keinen Token – das sperrt nichts."""
+    app, token = factory()
+    async with client_for(app, ip="127.0.0.1") as anon:
+        for _ in range(20):
+            r = await anon.get("/api/tools")
+            assert r.status_code == 401 and r.json()["detail"] == "Token fehlt."
+    async with client_for(app, ip="127.0.0.1", token="x" * 43) as wrong:
+        assert (await wrong.get("/api/tools")).status_code == 401
+    async with client_for(app, ip="127.0.0.1", token=token) as owner:
+        assert (await owner.get("/api/tools")).status_code == 200
+
+
+def test_token_check_needs_no_threadpool_slot():
+    """Synchrone Dependencies laufen in FastAPIs Thread-Pool – die Token-Prüfung soll das nicht."""
+    import inspect
+
+    from app.auth import TokenAuth
+
+    assert inspect.iscoroutinefunction(TokenAuth.__call__)
+
+
+async def test_forwarded_for_from_localhost_is_ignored(factory):
+    """tailscale serve setzt X-Forwarded-For auf die Tailnet-Adresse des Handys (auch IPv6 fd7a:115c:a1e0::/48).
+    Mit den uvicorn-Optionen von `python -m app` zählt nur die echte TCP-Quelle 127.0.0.1."""
+    import httpx
+    import uvicorn
+
+    from app.__main__ import uvicorn_options
+
+    app, token = factory()
+    opts = uvicorn_options(factory.config)
+    assert opts["proxy_headers"] is False
+
+    async def get(asgi, path, xff, auth=None):
+        headers = {"X-Forwarded-For": xff, **({"Authorization": f"Bearer {auth}"} if auth else {})}
+        transport = httpx.ASGITransport(app=asgi, client=("127.0.0.1", 40000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://jarvis.test") as c:
+            return await c.get(path, headers=headers)
+
+    ours = uvicorn.Config(app, **{k: v for k, v in opts.items() if k not in ("host", "port")})
+    ours.load()
+    assert (await get(ours.loaded_app, "/api/health", "fd7a:115c:a1e0::1234")).status_code == 200
+    assert (await get(ours.loaded_app, "/api/tools", "fd7a:115c:a1e0::1234", token)).status_code == 200
+    # Gegenprobe: uvicorns Vorgabe (proxy_headers=True) würde die Anfrage mit 403 abweisen.
+    default = uvicorn.Config(app)
+    default.load()
+    assert (await get(default.loaded_app, "/api/health", "fd7a:115c:a1e0::1234")).status_code == 403
 
 
 def test_lockout_expires_after_60s():

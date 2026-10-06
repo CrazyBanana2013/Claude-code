@@ -7,6 +7,7 @@ optionalen Extra "voice"; ohne es werden die Audio-Tests übersprungen.
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import sys
 import threading
@@ -28,6 +29,16 @@ except ImportError:  # Extra "voice" nicht installiert
     av = np = None
 
 needs_audio = pytest.mark.skipif(av is None, reason="PyAV/numpy fehlen (Extra 'voice' nicht installiert)")
+
+
+@pytest.fixture(autouse=True)
+def _restore_hf_env(monkeypatch):
+    """stt.main() setzt HF_*-Variablen mit setdefault – nach jedem Test wieder wie vorher."""
+    for name in ("HF_XET_CACHE", "HF_HUB_DISABLE_TELEMETRY", "HF_HUB_DISABLE_IMPLICIT_TOKEN",
+                 "HF_HUB_DISABLE_SYMLINKS_WARNING"):
+        monkeypatch.setenv(name, "x")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(stt, "_BROKEN", None)
 
 
 # --- Testaudio erzeugen ------------------------------------------------------------------
@@ -322,7 +333,9 @@ def test_not_installed_is_503(monkeypatch, tmp_path):
     eng = engine(tmp_path)
     with pytest.raises(STTUnavailable) as exc:
         eng.transcribe(b"", WEBM_TYPE)
-    assert "faster-whisper" in str(exc.value) and "--extra voice" in str(exc.value)
+    # Hinweis zuerst auf den Installer; kein nacktes „uv sync“ (uv liegt nicht im PATH, UV_NO_MODIFY_PATH)
+    assert "faster-whisper" in str(exc.value) and "Install.cmd" in str(exc.value)
+    assert "-InstallVoice" in str(exc.value) and "uv sync" not in str(exc.value)
     status = eng.status()
     assert status["available"] is False and "faster-whisper" in status["reason"]
 
@@ -492,7 +505,8 @@ def test_cli_not_installed_and_bad_config(monkeypatch, tmp_path, capsys):
     cfg = write_config(tmp_path)
     monkeypatch.setattr(stt, "whisper_installed", lambda: False)
     assert stt.main(["--download", "--config", str(cfg)]) == 3
-    assert "requirements-voice.txt" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "requirements-voice.txt" in err and "Install.cmd" in err and "uv sync" not in err
     bad = tmp_path / "kaputt.yaml"
     bad.write_text("voice: [", encoding="utf-8")
     assert stt.main(["--check", "--config", str(bad)]) == 2
@@ -507,3 +521,176 @@ def test_cli_runs_as_module_without_warnings(tmp_path):
     assert proc.returncode == 1, proc.stderr
     assert "fehlt" in proc.stdout
     assert "Warning" not in proc.stderr and "Traceback" not in proc.stderr
+
+
+# --- Speicherbomben: Länge vor dem Umrechnen, nur Browser-Codecs, MP4-Tabellen ------------------
+def _patch_u32(data: bytes, box: bytes, offset: int, value: int) -> bytes:
+    """32-bit-Feld `offset` Bytes nach dem Typ der ersten Box `box` überschreiben."""
+    pos = data.index(box) + 4 + offset
+    return data[:pos] + value.to_bytes(4, "big") + data[pos + 4:]
+
+
+def make_fragmented_mp4(seconds: float = 1.0) -> bytes:
+    """Fragmentiertes MP4 (wie Safaris MediaRecorder): moof/traf/trun statt einer großen Sample-Tabelle."""
+    buf = io.BytesIO()
+    with av.open(buf, mode="w", format="mp4", options={"movflags": "frag_keyframe+empty_moov+default_base_moof"}) as out:
+        stream = out.add_stream("aac", rate=44100, layout="mono")
+        signal = (0.2 * np.sin(2 * np.pi * 330 * np.arange(int(44100 * seconds)) / 44100) * 32767).astype(np.int16)
+        for start in range(0, signal.size, 1024):
+            frame = av.AudioFrame.from_ndarray(signal[start:start + 1024].reshape(1, -1), format="s16", layout="mono")
+            frame.sample_rate = 44100
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    return buf.getvalue()
+
+
+@needs_audio
+@pytest.mark.parametrize("field", ["stsz", "stts", "stsc"])
+def test_mp4_with_huge_sample_tables_is_rejected_before_ffmpeg_reads_it(monkeypatch, field):
+    """850 Byte mit „20 Millionen Samples“: FFmpeg legte beim Öffnen ~750 MB an – jetzt gar nicht erst geöffnet."""
+    data = make_audio("mp4", "aac", seconds=1.0, rate=44100)
+    offset = {"stsz": 8, "stts": 8, "stsc": 12}[field]  # stsz: sample_count, stts: 1. count, stsc: samples/chunk
+    bomb = _patch_u32(data, field.encode(), offset, 20_000_000)
+    monkeypatch.setattr(av, "open", lambda *a, **k: pytest.fail("av.open mit manipulierter MP4-Datei"))
+    with pytest.raises(AudioTooLarge):
+        stt.decode_audio(bomb, "mp4", max_seconds=30)
+
+
+@needs_audio
+def test_fragmented_mp4_decodes_and_huge_trun_is_rejected(monkeypatch):
+    data = make_fragmented_mp4(1.0)
+    assert b"moof" in data and b"trun" in data
+    audio = stt.decode_audio(data, "mp4", max_seconds=30)
+    assert abs(audio.size / 16000 - 1.0) < 0.15
+    bomb = _patch_u32(data, b"trun", 4, 50_000_000)  # version/flags, sample_count
+    monkeypatch.setattr(av, "open", lambda *a, **k: pytest.fail("av.open mit manipulierter MP4-Datei"))
+    with pytest.raises(AudioTooLarge):
+        stt.decode_audio(bomb, "mp4", max_seconds=30)
+
+
+@needs_audio
+def test_unusual_sample_rate_is_rejected_before_resampling(monkeypatch):
+    """Winzige Abtastrate: Ein Rahmen würde beim Umrechnen auf 16 kHz riesig – abgelehnt, bevor er umgerechnet wird."""
+    real = av.AudioResampler
+    resampled = []
+
+    class Spy:
+        def __init__(self, *a, **k):
+            self._inner = real(*a, **k)
+
+        def resample(self, frame):
+            resampled.append(frame)
+            return self._inner.resample(frame)
+
+    monkeypatch.setattr(av, "AudioResampler", Spy)
+    slow = make_audio("wav", "pcm_s16le", seconds=40.0, rate=100)
+    with pytest.raises(AudioInvalid, match="Abtastrate"):
+        stt.decode_audio(slow, "wav", max_seconds=30)
+    assert resampled == []
+
+
+@needs_audio
+def test_input_length_counts_before_resampling(monkeypatch):
+    real = av.AudioResampler
+    fed = []
+
+    class Spy:
+        def __init__(self, *a, **k):
+            self._inner = real(*a, **k)
+
+        def resample(self, frame):
+            if frame is not None:
+                fed.append(frame.samples / frame.sample_rate)
+            return self._inner.resample(frame)
+
+    monkeypatch.setattr(av, "AudioResampler", Spy)
+    data = make_audio("wav", "pcm_s16le", seconds=6.0, rate=8000)
+    with pytest.raises(AudioTooLarge):
+        stt.decode_audio(data, "wav", max_seconds=2)
+    assert sum(fed) <= 2 + stt.DURATION_GRACE
+
+
+@needs_audio
+@pytest.mark.parametrize("container,codec,demuxer", [
+    ("matroska", "pcm_s16le", "webm"),  # PCM in Matroska: beliebig große Blöcke
+    ("mp4", "alac", "mp4"),
+    ("mp4", "mp3", "mp4"),
+    ("wav", "pcm_s24le", "wav"),
+])
+def test_only_browser_codecs_are_decoded(container, codec, demuxer):
+    data = make_audio(container, codec, seconds=0.5, rate=16000)
+    with pytest.raises(AudioInvalid, match=f"Codec '{codec}'"):
+        stt.decode_audio(data, demuxer, max_seconds=30)
+
+
+# --- faster-whisper installiert, aber nicht ladbar (fehlende VC++-Laufzeit) ---------------------
+class _DllFailure:
+    """Import von ctranslate2 scheitert wie unter Windows ohne VC++-Laufzeit."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def find_spec(self, name, path, target=None):
+        import importlib.machinery
+
+        if name == "ctranslate2":
+            return importlib.machinery.ModuleSpec(name, self)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise self.exc
+
+
+@pytest.fixture(params=["ImportError", "FileNotFoundError"])
+def broken_whisper(request, monkeypatch):
+    pytest.importorskip("faster_whisper")
+    for name in [m for m in sys.modules if m == "faster_whisper" or m.startswith(("faster_whisper.", "ctranslate2"))]:
+        monkeypatch.delitem(sys.modules, name)
+    if request.param == "ImportError":
+        monkeypatch.setitem(sys.modules, "ctranslate2", None)
+    else:
+        failure = FileNotFoundError("Could not find module 'ctranslate2.dll' (or one of its dependencies).")
+        monkeypatch.setattr(sys, "meta_path", [_DllFailure(failure), *sys.meta_path])
+    yield request.param
+
+
+def test_broken_whisper_is_503_with_vcredist_hint(broken_whisper, tmp_path):
+    assert stt.whisper_installed() is True  # find_spec allein merkt nichts
+    eng = engine(tmp_path)
+    status = eng.status()
+    assert status["available"] is False and "Visual C++" in status["reason"] and stt.VCREDIST_URL in status["reason"]
+    with pytest.raises(STTUnavailable) as exc:
+        eng.transcribe(b"\x1a\x45\xdf\xa3" + b"\0" * 64, WEBM_TYPE)
+    assert exc.value.status_code == 503 and "Visual C++" in str(exc.value)
+    # danach billig erkannt (ohne erneuten Import)
+    assert "Visual C++" in (eng.basic_reason() or "")
+
+
+def test_cli_broken_whisper_exits_4_without_traceback(broken_whisper, tmp_path, capsys):
+    cfg = write_config(tmp_path, enabled=True)
+    for action in ("--check", "--download"):
+        assert stt.main([action, "--config", str(cfg), "--state", str(tmp_path / "st")]) == 4
+        err = capsys.readouterr().err
+        assert "Visual C++" in err and "Traceback" not in err
+
+
+def test_cli_keeps_hf_xet_cache_and_logs_under_the_model_folder(monkeypatch, tmp_path):
+    """hf_xet schreibt sonst Cache und Logs nach %USERPROFILE%\\.cache\\huggingface\\xet."""
+    pytest.importorskip("faster_whisper")
+    cfg = write_config(tmp_path, enabled=True)
+    state = tmp_path / "state"
+    seen = {}
+
+    def fake_download(name, root):
+        seen["xet"] = os.environ.get("HF_XET_CACHE")
+        return fake_hf_cache(root)
+
+    monkeypatch.setattr(stt, "download", fake_download)
+    monkeypatch.setattr(stt, "_download_size", lambda repo, root: None)
+    assert stt.main(["--download", "--config", str(cfg), "--state", str(state)]) == 0
+    assert seen["xet"] == str(state / "whisper" / ".xet")

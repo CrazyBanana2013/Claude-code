@@ -198,3 +198,45 @@ async def test_fallback_media_and_lock_off_windows(factory, monkeypatch):
     async with client_for(app, token=token) as c:
         body = (await c.post("/api/chat", json={"message": "PC sperren"})).json()
     assert "nur auf dem Windows-PC verfügbar" in body["reply"]
+
+
+# --- Sätze mit mehreren Teilen (vor allem gesprochen, ohne LLM) ----------------------------------
+@pytest.mark.parametrize("text,expected", [
+    ("Licht aus und PC sperren", [("led_power", {"state": "off"}), ("desktop_lock", {})]),
+    ("Licht an und lauter", [("led_power", {"state": "on"}), ("desktop_volume", {"action": "up"})]),
+    ("Licht aus, Pause", [("led_power", {"state": "off"}), ("desktop_media", {"action": "play_pause"})]),
+    ("Schließe Rechner und starte Editor",
+     [("desktop_app_close", {"app_id": "rechner"}), ("desktop_app_start", {"app_id": "editor"})]),
+    # früher: "rechner" + "aus" im selben Satz = Herunterfahren
+    ("Schließe Rechner und mach das Licht aus",
+     [("desktop_app_close", {"app_id": "rechner"}), ("led_power", {"state": "off"})]),
+    ("Licht an und 50 %", [("led_power", {"state": "on"}), ("led_brightness", {"percent": 50})]),
+    ("öffne example.org und mach lauter",
+     [("desktop_open_url", {"url": "https://example.org"}), ("desktop_volume", {"action": "up"})]),
+    ("Starte CS2 und mach das Licht aus", [("scripts_start", {"script_id": "cs2"}), ("led_power", {"state": "off"})]),
+    # Teile, die allein nichts bedeuten, ändern nichts
+    ("Hey Jarvis, mach das Licht an", [("led_power", {"state": "on"})]),
+    ("öffne example.org, bitte", [("desktop_open_url", {"url": "https://example.org"})]),
+    # Namen mit "und": dann gilt der ganze Satz
+    ("Preset Abend und Nacht", [("led_preset", {"preset": "abend und nacht"})]),
+])
+def test_parse_mixed_commands(text, expected):
+    assert parse(text, CFG) == expected
+
+
+def test_app_named_right_after_the_verb_wins():
+    from app.fallback import _find_app
+
+    assert _find_app(CFG, "rechner editor").id == "rechner"
+    assert _find_app(CFG, "editor rechner").id == "editor"
+
+
+async def test_unknown_part_is_named_in_the_reply(factory):
+    handler, posted = wled_mock()
+    factory.device_handler = handler
+    app, token = factory({"wled": {"base_url": "http://wled.test"}})
+    async with client_for(app, token=token) as c:
+        body = (await c.post("/api/chat", json={"message": "Licht an und koch mir einen Kaffee"})).json()
+    assert posted == [{"on": True, "v": True}]
+    assert body["reply"].startswith("Licht an.") and "Nicht verstanden" in body["reply"]
+    assert "„koch mir einen Kaffee“" in body["reply"]

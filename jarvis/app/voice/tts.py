@@ -10,8 +10,8 @@ Lautstärke noch Dateien steuern) und nie SVSFIsFilename (Text wäre sonst ein D
 Werte laut sapi.idl (SpeechVoiceSpeakFlags): SVSFlagsAsync = 1, SVSFPurgeBeforeSpeak = 2,
 SVSFIsFilename = 4, SVSFIsXML = 8, SVSFIsNotXML = 16.
 
-COM-Objekte gehören zu dem Thread (Apartment), in dem sie erzeugt wurden. Deshalb erzeugt,
-benutzt und gibt nur der Worker-Thread das SpVoice-Objekt frei; alle anderen Threads legen nur
+Der Worker-Thread läuft als COM-MTA (app/wincom.py: kein verstecktes Fenster, keine Nachrichtenschleife
+nötig). Nur er erzeugt, benutzt und gibt das SpVoice-Objekt frei; alle anderen Threads legen nur
 Befehle in einen Ein-Platz-Puffer („der neueste Text gewinnt“).
 """
 
@@ -121,15 +121,19 @@ class SapiBackend:
         self._co_initialized = False
 
     def open(self) -> None:
-        import comtypes  # erster Import initialisiert COM für diesen Thread
+        from app.wincom import init_mta
+
+        try:
+            # MTA: kein verstecktes COM-Fenster, das ohne Nachrichtenschleife andere Programme blockiert
+            comtypes = init_mta()
+            self._co_initialized = True
+        except OSError:  # schon in anderem Modus initialisiert – dann ohne eigenes Gegenstück
+            import comtypes
+
+            self._co_initialized = False
         import comtypes.client
 
         self._comtypes = comtypes
-        try:
-            comtypes.CoInitializeEx()
-            self._co_initialized = True
-        except OSError:  # schon in anderem Modus initialisiert – dann ohne eigenes Gegenstück
-            self._co_initialized = False
         voice = comtypes.client.CreateObject("SAPI.SpVoice", dynamic=True)
         tokens_obj = voice.GetVoices("", "")
         tokens = [tokens_obj.Item(i) for i in range(int(tokens_obj.Count))]

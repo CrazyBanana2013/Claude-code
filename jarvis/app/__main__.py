@@ -141,6 +141,22 @@ def _exit_cleanly_on_stop_signals() -> Iterator[None]:
                 pass
 
 
+def uvicorn_options(config) -> dict:
+    """Optionen für uvicorn.run.
+
+    proxy_headers=False: uvicorn würde sonst X-Forwarded-For von 127.0.0.1 übernehmen. Über
+    ``tailscale serve`` (README Abschnitt 12) setzt Tailscale dort die Tailnet-Adresse des Handys ein –
+    bei IPv6 (fd7a:115c:a1e0::/48) gäbe das 403 vom IP-Filter. Ohne Proxy-Header sieht JARVIS die echte
+    TCP-Quelle (127.0.0.1), und lokale Programme können keine fremde Absender-IP vortäuschen.
+    """
+    return {
+        "host": config.server.bind,
+        "port": config.server.port,
+        "log_level": "info",
+        "proxy_headers": False,
+    }
+
+
 def main() -> int:
     _redirect_output_if_headless()
     try:
@@ -174,7 +190,7 @@ def main() -> int:
     atexit.register(_cleanup)
     try:
         with _exit_cleanly_on_stop_signals():
-            uvicorn.run("app.main:app", host=config.server.bind, port=config.server.port, log_level="info")
+            uvicorn.run("app.main:app", **uvicorn_options(config))
     except KeyboardInterrupt:  # Strg+C in der Konsole = normales Beenden, kein Stacktrace
         pass
     finally:
